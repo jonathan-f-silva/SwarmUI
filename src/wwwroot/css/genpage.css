@@ -1298,20 +1298,23 @@ body {
 }
 
 @media screen and (max-width:768px) {
-  .simpletabmainview.simpletab-show {
-      display: flex;
-      flex-flow: column;
-      overflow: auto;
-      height: auto;
-    }
-  
-    .simpletabbrowserwrapper {
+    #simpletabbrowser-content,
+    #simpletabbrowser-fullcontent,
+    #simpletabmainview {
+        display: flex;
+        flex-flow: column;
+        overflow: auto;
+        height: auto !important;
+        width: auto !important;
+      }
+
+    #simpletabbrowserwrapper {
       display: flex;
       width: auto;
       height: auto;
     }
 
-    .simple-wrapper-flex {
+    #simple_tab_top_area {
       flex-flow: column;
       width: auto;
       height: auto;
