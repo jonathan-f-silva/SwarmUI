@@ -1334,4 +1334,14 @@ body {
     #simple_input_sidebar {
       width: 100%;
     }
+
+    .browser-folder-tree-container {
+      height: auto;
+    }
+}
+
+@media (min-width: 768px) {
+    .browser-folder-tree-container {
+        display: inline-block !important;
+    }
 }

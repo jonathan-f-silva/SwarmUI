@@ -506,6 +506,8 @@ class GenPageBrowserClass {
             this.hasGenerated = true;
             this.container.innerHTML = '';
             this.folderTreeDiv = createDiv(`${this.id}-foldertree`, 'browser-folder-tree-container');
+            this.folderTreeDiv.classList.add('navbarToggler');
+            this.folderTreeDiv.classList.add('collapse');
             let folderTreeSplitter = createDiv(`${this.id}-splitter`, 'browser-folder-tree-splitter splitter-bar');
             this.headerBar = createDiv(`${this.id}-header`, 'browser-header-bar');
             this.fullContentDiv = createDiv(`${this.id}-fullcontent`, 'browser-fullcontent-container');
