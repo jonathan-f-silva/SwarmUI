@@ -18,25 +18,33 @@
 <script>
     window.alwaysRefreshOnLoad = @alwaysRefreshOnLoad;
 </script>
-
-<ul class="nav nav-tabs" role="tablist" id="toptablist">
-    <li class="nav-item" role="presentation">
-        <a class="nav-link translate" data-bs-toggle="tab" href="#Simple" id="simpletabbutton" aria-selected="false" tabindex="-1" role="tab">Simple</a>
-    </li>
-    <li class="nav-item" role="presentation">
-        <a class="nav-link active translate" data-bs-toggle="tab" href="#Text2Image" id="text2imagetabbutton" aria-selected="true" role="tab">Generate</a>
-    </li>
-    @WebServer.T2ITabHeader
-    <li class="nav-item" role="presentation">
-        <a class="nav-link translate" data-bs-toggle="tab" href="#utilities_tab" id="utilitiestabbutton" aria-selected="false" tabindex="-1" role="tab">Utilities</a>
-    </li>
-    <li class="nav-item" role="presentation">
-        <a class="nav-link translate" data-bs-toggle="tab" href="#user_tab" id="usersettingstabbutton" aria-selected="false" tabindex="-1" role="tab">User</a>
-    </li>
-    <li class="nav-item" role="presentation">
-        <a class="nav-link translate" data-bs-toggle="tab" href="#server_tab" id="servertabbutton" aria-selected="false" tabindex="-1" role="tab">Server</a>
-    </li>
-</ul>
+<nav class="navbar navbar-expand-md">
+  <div class="container-fluid">
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarToggler" aria-controls="navbarToggler" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarToggler">
+      <ul class="navbar-nav nav-tabs" role="tablist" id="toptablist">
+          <li class="nav-item" role="presentation">
+              <a class="nav-link translate" data-bs-toggle="tab" href="#Simple" id="simpletabbutton" aria-selected="false" tabindex="-1" role="tab">Simple</a>
+          </li>
+          <li class="nav-item" role="presentation">
+              <a class="nav-link active translate" data-bs-toggle="tab" href="#Text2Image" id="text2imagetabbutton" aria-selected="true" role="tab">Generate</a>
+          </li>
+          @WebServer.T2ITabHeader
+          <li class="nav-item" role="presentation">
+              <a class="nav-link translate" data-bs-toggle="tab" href="#utilities_tab" id="utilitiestabbutton" aria-selected="false" tabindex="-1" role="tab">Utilities</a>
+          </li>
+          <li class="nav-item" role="presentation">
+              <a class="nav-link translate" data-bs-toggle="tab" href="#user_tab" id="usersettingstabbutton" aria-selected="false" tabindex="-1" role="tab">User</a>
+          </li>
+          <li class="nav-item" role="presentation">
+              <a class="nav-link translate" data-bs-toggle="tab" href="#server_tab" id="servertabbutton" aria-selected="false" tabindex="-1" role="tab">Server</a>
+          </li>
+      </ul>
+    </div>
+  </div>
+</nav>    
 <div class="tab-content tab-hundred">
     <div class="tab-pane tab-pane-vw" id="Simple" role="tabpanel">
         <div class="simpletabbrowserwrapper browser_container" id="simpletabbrowserwrapper">
