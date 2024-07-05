@@ -1296,3 +1296,42 @@ body {
 .active-model-download-card .status-text {
     font-size: 80%;
 }
+
+@media screen and (max-width:768px) {
+  .simpletabmainview.simpletab-show {
+      display: flex;
+      flex-flow: column;
+      overflow: auto;
+      height: auto;
+    }
+  
+    .simpletabbrowserwrapper {
+      display: flex;
+      width: auto;
+      height: auto;
+    }
+
+    .simple-wrapper-flex {
+      flex-flow: column;
+      width: auto;
+      height: auto;
+      display: flex;
+      justify-content: flex-start;
+    }
+
+    .simple-outer-wall {
+      display: none;
+    }
+
+    .simple-vertical-divider {
+      display: none;
+    }
+
+    #simple_loading_spinner {
+      display: none !important;
+    }
+
+    #simple_input_sidebar {
+      width: 100%;
+    }
+}
