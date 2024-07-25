@@ -61,7 +61,7 @@ public class WorkflowGenerator
     }
 
     /// <summary>Lock for when ensuring the backend has valid models.</summary>
-    public static LockObject ModelDownloaderLock = new();
+    public static MultiLockSet<string> ModelDownloaderLocks = new(32);
 
     /// <summary>The raw user input data.</summary>
     public T2IParamInput UserInput;
@@ -79,11 +79,8 @@ public class WorkflowGenerator
         FinalPrompt = ["6", 0],
         FinalNegativePrompt = ["7", 0],
         FinalSamples = ["10", 0],
-        FinalImageOut = ["8", 0],
+        FinalImageOut = null,
         LoadingModel = null, LoadingClip = null, LoadingVAE = null;
-
-    /// <summary>If true, the init image was altered in latent space and is no longer valid.</summary>
-    public bool InitialImageIsAlteredAsLatent = false;
 
     /// <summary>If true, something has required the workflow stop now.</summary>
     public bool SkipFurtherSteps = false;
@@ -180,7 +177,7 @@ public class WorkflowGenerator
         {
             return;
         }
-        lock (ModelDownloaderLock)
+        lock (ModelDownloaderLocks.GetLock(name))
         {
             if (File.Exists(filePath)) // Double-check in case another thread downloaded it
             {
@@ -238,7 +235,7 @@ public class WorkflowGenerator
             if (confinements is not null && confinements.Count > i)
             {
                 int confinementId = int.Parse(confinements[i]);
-                if (confinementId != confinement)
+                if (confinementId >= 0 && confinementId != confinement)
                 {
                     continue;
                 }
@@ -289,9 +286,11 @@ public class WorkflowGenerator
     /// <param name="image">The image node input.</param>
     /// <param name="growBy">Number of pixels to grow the boundary by.</param>
     /// <param name="vae">The relevant VAE.</param>
+    /// <param name="model">The model in use, for determining resolution.</param>
     /// <param name="threshold">Optional minimum value threshold.</param>
+    /// <param name="thresholdMax">Optional maximum value of the threshold.</param>
     /// <returns>(boundsNode, croppedMask, maskedLatent).</returns>
-    public (string, string, string) CreateImageMaskCrop(JArray mask, JArray image, int growBy, JArray vae, double threshold = 0.01, double thresholdMax = 1)
+    public (string, string, string) CreateImageMaskCrop(JArray mask, JArray image, int growBy, JArray vae, T2IModel model, double threshold = 0.01, double thresholdMax = 1)
     {
         if (threshold > 0)
         {
@@ -327,9 +326,9 @@ public class WorkflowGenerator
         string scaledImage = CreateNode("SwarmImageScaleForMP", new JObject()
         {
             ["image"] = new JArray() { croppedImage, 0 },
-            ["width"] = UserInput.Get(T2IParamTypes.Width, 1024),
-            ["height"] = UserInput.GetImageHeight(),
-            ["can_shrink"] = false
+            ["width"] = model?.StandardWidth <= 0 ? UserInput.Get(T2IParamTypes.Width, 1024) : model.StandardWidth,
+            ["height"] = model?.StandardHeight <= 0 ? UserInput.GetImageHeight() : model.StandardHeight,
+            ["can_shrink"] = true
         });
         string vaeEncoded = CreateVAEEncode(vae, [scaledImage, 0], null, true);
         string masked = CreateNode("SetLatentNoiseMask", new JObject()
@@ -343,16 +342,20 @@ public class WorkflowGenerator
     /// <summary>Returns a masked image composite with mask thresholding.</summary>
     public JArray CompositeMask(JArray baseImage, JArray newImage, JArray mask)
     {
-        string thresholded = CreateNode("ThresholdMask", new JObject()
+        if (!UserInput.Get(T2IParamTypes.MaskCompositeUnthresholded, false))
         {
-            ["mask"] = mask,
-            ["value"] = 0.001
-        });
+            string thresholded = CreateNode("ThresholdMask", new JObject()
+            {
+                ["mask"] = mask,
+                ["value"] = 0.001
+            });
+            mask = [thresholded, 0];
+        }
         string composited = CreateNode("ImageCompositeMasked", new JObject()
         {
             ["destination"] = baseImage,
             ["source"] = newImage,
-            ["mask"] = new JArray() { thresholded, 0 },
+            ["mask"] = mask,
             ["x"] = 0,
             ["y"] = 0,
             ["resize_source"] = false
@@ -371,16 +374,20 @@ public class WorkflowGenerator
             ["upscale_method"] = "bilinear",
             ["crop"] = "disabled"
         });
-        string thresholded = CreateNode("ThresholdMask", new JObject()
+        if (!UserInput.Get(T2IParamTypes.MaskCompositeUnthresholded, false))
         {
-            ["mask"] = croppedMask,
-            ["value"] = 0.001
-        });
+            string thresholded = CreateNode("ThresholdMask", new JObject()
+            {
+                ["mask"] = croppedMask,
+                ["value"] = 0.001
+            });
+            croppedMask = [thresholded, 0];
+        }
         string composited = CreateNode("ImageCompositeMasked", new JObject()
         {
             ["destination"] = firstImage,
             ["source"] = new JArray() { scaledBack, 0 },
-            ["mask"] = new JArray() { thresholded, 0 },
+            ["mask"] = croppedMask,
             ["x"] = new JArray() { boundsNode, 0 },
             ["y"] = new JArray() { boundsNode, 1 },
             ["resize_source"] = false
@@ -477,12 +484,12 @@ public class WorkflowGenerator
         {
             throw new InvalidDataException($"Model {model.Name} appears to be TensorRT lacks metadata to identify its architecture, cannot load");
         }
-        else if (model.ModelClass?.ID == "pixart-ms-sigma-xl-2")
+        else if (model.ModelClass?.CompatClass == "pixart-ms-sigma-xl-2")
         {
             string pixartNode = CreateNode("PixArtCheckpointLoader", new JObject()
             {
                 ["ckpt_name"] = model.ToString(ModelFolderFormat),
-                ["model"] = "PixArtMS_Sigma_XL_2"
+                ["model"] = model.ModelClass.ID == "pixart-ms-sigma-xl-2-2k" ? "PixArtMS_Sigma_XL_2_2K" : "PixArtMS_Sigma_XL_2"
             }, id);
             LoadingModel = [pixartNode, 0];
             requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
@@ -499,7 +506,7 @@ public class WorkflowGenerator
             }
             if (string.IsNullOrWhiteSpace(xlVae))
             {
-                throw new InvalidDataException("No default SDXL VAE found, please download and SDXL VAE and set it as default in User Settings");
+                throw new InvalidDataException("No default SDXL VAE found, please download an SDXL VAE and set it as default in User Settings");
             }
             string vaeLoader = CreateNode("VAELoader", new JObject()
             {
@@ -579,6 +586,14 @@ public class WorkflowGenerator
                     LoadingClip = [tripleClipLoader, 0];
                 }
             }
+        }
+        else if (CurrentCompatClass() == "auraflow-v1")
+        {
+            string sd3Node = CreateNode("ModelSamplingAuraFlow", new JObject()
+            {
+                ["model"] = LoadingModel,
+                ["shift"] = UserInput.Get(T2IParamTypes.SigmaShift, 1.73)
+            });
         }
         else if (!string.IsNullOrWhiteSpace(predType))
         {
@@ -967,6 +982,14 @@ public class WorkflowGenerator
     {
         PromptRegion regionalizer = new(prompt);
         JArray globalCond = CreateConditioningLine(regionalizer.GlobalPrompt, clip, model, isPositive, firstId);
+        if (!isPositive && string.IsNullOrWhiteSpace(prompt) && UserInput.Get(T2IParamTypes.ZeroNegative, false))
+        {
+            string zeroed = CreateNode("ConditioningZeroOut", new JObject()
+            {
+                ["conditioning"] = globalCond
+            });
+            return [zeroed, 0];
+        }
         PromptRegion.Part[] parts = regionalizer.Parts.Where(p => p.Type == PromptRegion.PartType.Object || p.Type == PromptRegion.PartType.Region).ToArray();
         if (parts.IsEmpty())
         {
@@ -1014,8 +1037,15 @@ public class WorkflowGenerator
                 ["y"] = part.Y,
                 ["width"] = part.Width,
                 ["height"] = part.Height,
-                ["strength"] = part.Strength
+                ["strength"] = Math.Abs(part.Strength)
             });
+            if (part.Strength < 0)
+            {
+                regionNode = CreateNode("InvertMask", new JObject()
+                {
+                    ["mask"] = new JArray() { regionNode, 0 }
+                });
+            }
             RegionHelper region = new(partCond, [regionNode, 0]);
             regions.Add(region);
             if (lastMergedMask is null)
@@ -1064,10 +1094,7 @@ public class WorkflowGenerator
                 {
                     ["mask"] = mask
                 });
-                CreateNode("SwarmSaveImageWS", new JObject()
-                {
-                    ["images"] = new JArray() { imgNode, 0 }
-                });
+                CreateImageSaveNode([imgNode, 0]);
             }
         }
         foreach (RegionHelper region in regions)

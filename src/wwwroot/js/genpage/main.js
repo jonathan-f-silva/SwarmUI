@@ -70,6 +70,7 @@ function clickImageInBatch(div) {
     setCurrentImage(div.dataset.src, div.dataset.metadata, div.dataset.batch_id ?? '', imgElem.dataset.previewGrow == 'true');
 }
 
+/** "Reuse Parameters" button impl. */
 function copy_current_image_params() {
     if (!currentMetadataVal) {
         alert('No parameters to copy!');
@@ -82,12 +83,56 @@ function copy_current_image_params() {
     if ('original_negativeprompt' in metadata) {
         metadata.negativeprompt = metadata.original_negativeprompt;
     }
+    // Special hacks to repair edge cases in LoRA reuse
+    // There should probably just be a direct "for lora in list, set lora X with weight Y" instead of this
+    if ('lorasectionconfinement' in metadata && 'loras' in metadata && 'loraweights' in metadata) {
+        let confinements = metadata.lorasectionconfinement;
+        let loras = metadata.loras;
+        let weights = metadata.loraweights;
+        if (confinements.length == loras.length && loras.length == weights.length) {
+            let newLoras = [];
+            let newWeights = [];
+            for (let i = 0; i < confinements.length; i++) {
+                if (confinements[i] == -1) {
+                    newLoras.push(loras[i]);
+                    newWeights.push(weights[i]);
+                }
+            }
+            metadata.loras = newLoras;
+            metadata.loraweights = newWeights;
+            delete metadata.lorasectionconfinement;
+        }
+    }
+    if ('loras' in metadata && 'loraweights' in metadata && document.getElementById('input_loras') && metadata.loras.length == metadata.loraweights.length) {
+        let loraElem = getRequiredElementById('input_loras');
+        for (let val of metadata.loras) {
+            if (val && !$(loraElem).find(`option[value="${val}"]`).length) {
+                $(loraElem).append(new Option(val, val, false, false));
+            }
+        }
+        let valSet = [...loraElem.options].map(option => option.value);
+        let newLoras = [];
+        let newWeights = [];
+        for (let val of valSet) {
+            let index = metadata.loras.indexOf(val);
+            if (index != -1) {
+                newLoras.push(metadata.loras[index]);
+                newWeights.push(metadata.loraweights[index]);
+            }
+        }
+        metadata.loras = newLoras;
+        metadata.loraweights = newWeights;
+    }
     let exclude = getUserSetting('reuseparamexcludelist').split(',').map(s => cleanParamName(s));
     resetParamsToDefault(exclude);
     for (let param of gen_param_types) {
+        if (param.nonreusable || exclude.includes(param.id)) {
+            continue;
+        }
         let elem = document.getElementById(`input_${param.id}`);
-        if (elem && metadata[param.id] && !exclude.includes(param.id)) {
-            setDirectParamValue(param, metadata[param.id]);
+        let val = metadata[param.id];
+        if (elem && val !== undefined && val !== null && val !== '') {
+            setDirectParamValue(param, val);
             if (param.toggleable && param.visible) {
                 let toggle = getRequiredElementById(`input_${param.id}_toggle`);
                 toggle.checked = true;
@@ -128,7 +173,7 @@ function formatMetadata(metadata) {
         if (obj) {
             for (let key of Object.keys(obj)) {
                 let val = obj[key];
-                if (val) {
+                if (val !== null && val !== '') { // According to javascript, 0 == '', so have to === to block that. Argh.
                     for (let cleaner of metadataKeyFormatCleaners) {
                         key = cleaner(key);
                     }
@@ -197,6 +242,9 @@ class ImageFullViewHelper {
 
     onMouseDown(e) {
         if (this.modal.style.display != 'block') {
+            return;
+        }
+        if (e.button == 2) { // right-click
             return;
         }
         this.lastMouseX = e.clientX;
@@ -605,10 +653,15 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
         }
     }, '', 'Sets this image as the Init Image parameter input');
     includeButton('Edit Image', () => {
-        let initImageGroupToggle = getRequiredElementById('input_group_content_initimage_toggle');
+        let initImageGroupToggle = document.getElementById('input_group_content_initimage_toggle');
         if (initImageGroupToggle) {
             initImageGroupToggle.checked = true;
             triggerChangeFor(initImageGroupToggle);
+        }
+        let initImageParam = document.getElementById('input_initimage');
+        if (!initImageParam) {
+            showError('Cannot use "Edit Image": Init Image parameter not found\nIf you have a custom workflow, deactivate it, or add an Init Image parameter.');
+            return;
         }
         imageEditor.setBaseImage(img);
         imageEditor.activate();
@@ -1042,19 +1095,21 @@ function describeImage(image) {
     }
     let description = image.data.name + "\n" + formatMetadata(image.data.metadata);
     let name = image.data.name;
+    let dragImage = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}`;
     let imageSrc = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}?preview=true`;
     let searchable = description;
-    return { name, description, buttons, 'image': imageSrc, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable };
+    return { name, description, buttons, 'image': imageSrc, 'dragimage': dragImage, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable };
 }
 
 function selectImageInHistory(image, div) {
+    lastHistoryImage = image.data.src;
+    lastHistoryImageDiv = div;
     let curImg = document.getElementById('current_image_img');
     if (curImg && curImg.dataset.src == image.data.src) {
+        curImg.dataset.batch_id = 'history';
         curImg.click();
         return;
     }
-    lastHistoryImage = image.data.src;
-    lastHistoryImageDiv = div;
     if (image.data.name.endsWith('.html')) {
         window.open(image.data.src, '_blank');
     }
@@ -1767,14 +1822,24 @@ function revisionAddImage(file) {
     let reader = new FileReader();
     reader.onload = (e) => {
         let data = e.target.result;
+        let imageContainer = createDiv(null, 'alt-prompt-image-container');
+        let imageRemoveButton = createSpan(null, 'alt-prompt-image-container-remove-button', '&times;');
+        imageRemoveButton.addEventListener('click', (e) => {
+            imageContainer.remove();
+            autoRevealRevision();
+            altPromptSizeHandleFunc();
+        });
+        imageRemoveButton.title = 'Remove this image';
+        imageContainer.appendChild(imageRemoveButton);
         let imageObject = new Image();
         imageObject.src = data;
         imageObject.height = 128;
         imageObject.className = 'alt-prompt-image';
         imageObject.dataset.filedata = data;
+        imageContainer.appendChild(imageObject);
         clearButton.style.display = '';
         showRevisionInputs(true);
-        promptImageArea.appendChild(imageObject);
+        promptImageArea.appendChild(imageContainer);
         altPromptSizeHandleFunc();
     };
     reader.readAsDataURL(file);

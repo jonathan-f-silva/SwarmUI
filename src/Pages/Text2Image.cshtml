@@ -90,7 +90,7 @@
                     <div class="main_inputs_area_wrapper" id="main_inputs_area_wrapper">
                         <input type="text translate" class="main_inputs_filter auto-text" id="main_inputs_filter" oninput="hideUnsupportableParams()" placeholder="Filter parameters..." />
                         <div id="main_inputs_area"></div>
-                        <div id="main_inputs_area_advanced" class="main_inputs_area_advanced" style="display:none;"></div>
+                        <div id="main_inputs_area_advanced" class="main_inputs_area_advanced"></div>
                         <div id="main_inputs_area_hidden" class="main_inputs_area_hidden"></div>
                         <div style="height: 10rem;"></div> <!-- Spacer -->
                     </div>
@@ -814,6 +814,7 @@
                         </div>
                     </div>
                 </div>
+                <div style="height: 10rem"></div> <!-- Spacer -->
             </div>
             <div class="tab-pane" id="Settings-Backends" role="tabpanel">
                 <div class="backend_add_button_container">
@@ -836,7 +837,7 @@
                     <button type="button" class="btn btn-primary basic-button translate" onclick="save_server_settings()">Save</button>
                     <button type="button" class="btn btn-secondary basic-button translate" onclick="cancel_server_settings_edit()">Cancel</button>
                 </div>
-        <div style="height: 10rem"></div> <!-- Spacer -->
+                <div style="height: 10rem"></div> <!-- Spacer -->
             </div>
             <div class="tab-pane" id="Server-Logs" role="tabpanel">
                 <center>View: <select id="server_log_type_selector"></select> Filter: <input type="text" id="server_log_filter" placeholder="Filter" /></center>

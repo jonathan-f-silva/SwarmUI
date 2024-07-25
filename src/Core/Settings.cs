@@ -11,6 +11,9 @@ public class Settings : AutoConfiguration
     [ConfigComment("Settings related to file paths.")]
     public PathsData Paths = new();
 
+    [ConfigComment("Settings related to image/model metadata.")]
+    public MetadataSection Metadata = new();
+
     [ConfigComment("Settings related to networking and the webserver.")]
     public NetworkData Network = new();
 
@@ -166,14 +169,24 @@ public class Settings : AutoConfiguration
         [ConfigComment("When true, output paths always have the username as a folder.\nWhen false, this will be skipped.\nKeep this on in multi-user environments.")]
         public bool AppendUserNameToOutputPath = true;
 
+        [ConfigComment("If true, when a user deletes an image, send it to the OS Recycle Bin instead of permanently deleting it.\nIf false, image files are permanently deleted.\nDefaults to false.")]
+        public bool RecycleDeletedImages = false;
+    }
+
+    /// <summary>Settings related to image/model metadata.</summary>
+    public class MetadataSection : AutoConfiguration
+    {
         [ConfigComment("If true, model metadata is tracked on a per-folder basis. This is better for example if you copy model folders to different machines, or have symlinks to different instances, or etc.\nIf false, model metadata is tracked in the central data folder. This is better if you don't want stray files in your model folders, or if you have several Swarm instances running simultaneously.")]
         public bool ModelMetadataPerFolder = true;
 
         [ConfigComment("If true, image metadata is tracked on a per-folder basis.\nIf false, image metadata is tracked in the central data folder.\nThis is better if you don't want stray files in your output folders, or if you have several Swarm instances running simultaneously over the same output folders.")]
         public bool ImageMetadataPerFolder = true;
 
-        [ConfigComment("If true, when a user deletes an image, send it to the OS Recycle Bin instead of permanently deleting it.\nIf false, image files are permanently deleted.\nDefaults to false.")]
-        public bool RecycleDeletedImages = false;
+        [ConfigComment("If true, unrecognized XL-format models will be treated as SDXL 1.0.\nIf false, unrecognized XL-format models will be treated as SDXL 0.9.\nThe SDXL 1.0 specification requires ModelSpec architecture IDs, and any similar model lacking this ID is a 0.9 model,\nhowever, many custom XL model author have excluded this metadata.\nThis means those models are technically SDXL 0.9 models, however it can be convenient to pretend they are 1.0 models instead.\nNote that enabling this will mislabel the official SDXL 0.9 model.")]
+        public bool XLDefaultAsXL1 = false;
+
+        [ConfigComment("If true, editing model metadata should write a '.swarm.json' file next to the model.\nIf false, apply metadata to the model itself.\nApplying directly to the model is generally better, however the JSON file might be preferable if you have a very slow data drive, as it avoids rewriting the model content.")]
+        public bool EditMetadataWriteJSON = false;
     }
 
     /// <summary>Settings to control restrictions on users.</summary>
@@ -294,6 +307,10 @@ public class Settings : AutoConfiguration
             [ConfigComment("What VAE to use with SDv1 models by default. Use 'None' to use the one in the model.")]
             [ManualSettingsOptions(Impl = null, Vals = ["None"])]
             public string DefaultSDv1VAE = "None";
+
+            [ConfigComment("What VAE to use with SVD (Video) models by default. Use 'None' to use the one in the model. This should normally be an SDv1 VAE.")]
+            [ManualSettingsOptions(Impl = null, Vals = ["None"])]
+            public string DefaultSVDVAE = "None";
         }
 
         [ConfigComment("Options to override default VAEs with.")]

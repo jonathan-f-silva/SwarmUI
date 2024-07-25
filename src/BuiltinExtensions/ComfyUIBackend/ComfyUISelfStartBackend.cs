@@ -60,7 +60,8 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         string folderName = url.AfterLast('/');
         if (!Directory.Exists($"{nodePath}/{folderName}"))
         {
-            await Process.Start(new ProcessStartInfo("git", $"clone {url}") { WorkingDirectory = nodePath }).WaitForExitAsync(Program.GlobalProgramCancel);
+            string response = await Utilities.RunGitProcess($"clone {url}", nodePath);
+            Logs.Debug($"Comfy node clone response for {folderName}: {response.Trim()}");
             string reqFile = $"{nodePath}/{folderName}/requirements.txt";
             ComfyUISelfStartBackend[] backends = [.. Program.Backends.RunningBackendsOfType<ComfyUISelfStartBackend>()];
             if (File.Exists(reqFile) && backends.Any())
@@ -92,7 +93,8 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         }
         else
         {
-            await NetworkBackendUtils.RunProcessWithMonitoring(new ProcessStartInfo("git", "pull") { WorkingDirectory = Path.GetFullPath($"{nodePath}/{folderName}") }, $"comfy node pull ({folderName})", "comfynodepull");
+            string response = await Utilities.RunGitProcess($"pull", $"{nodePath}/{folderName}");
+            Logs.Debug($"Comfy node pull response for {folderName}: {response.Trim()}");
         }
         return false;
     }
@@ -117,7 +119,12 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             {
                 if (Directory.Exists($"{node}/.git"))
                 {
-                    tasks.Add(NetworkBackendUtils.RunProcessWithMonitoring(new ProcessStartInfo("git", "pull") { WorkingDirectory = node }, $"comfy node pull ({node.Replace('\\', '/').AfterLast('/')})", "comfynodepull"));
+                    string toUse = node;
+                    tasks.Add(Task.Run(async () =>
+                    {
+                        string response = await Utilities.RunGitProcess($"pull", toUse);
+                        Logs.Debug($"Comfy node pull response for {toUse.Replace('\\', '/').AfterLast('/')}: {response.Trim()}");
+                    }));
                 }
             }
             await Task.WhenAll(tasks);
@@ -234,15 +241,8 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             {
                 try
                 {
-                    ProcessStartInfo psi = new("git", "pull")
-                    {
-                        WorkingDirectory = Path.GetFullPath(settings.StartScript).Replace('\\', '/').BeforeLast('/'),
-                        RedirectStandardError = true,
-                        RedirectStandardOutput = true
-                    };
-                    Process p = Process.Start(psi);
-                    NetworkBackendUtils.ReportLogsFromProcess(p, "ComfyUI (Git Pull)", "");
-                    await p.WaitForExitAsync(Program.GlobalProgramCancel);
+                    string response = await Utilities.RunGitProcess($"pull", Path.GetFullPath(settings.StartScript).Replace('\\', '/').BeforeLast('/'));
+                    Logs.Debug($"Comfy git pull response: {response.Trim()}");
                 }
                 catch (Exception ex)
                 {
@@ -266,12 +266,15 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 NetworkBackendUtils.ReportLogsFromProcess(p, $"ComfyUI (Install {pipName})", "");
                 await p.WaitForExitAsync(Program.GlobalProgramCancel);
             }
-            await install("kornia", "kornia"); // ComfyUI added this dependency, didn't used to have it
+            // ComfyUI added these dependencies, didn't used to have it
+            await install("kornia", "kornia");
+            await install("sentencepiece", "sentencepiece");
+            await install("spandrel", "spandrel");
+            // Other added dependencies
             await install("rembg", "rembg");
             await install("matplotlib", "matplotlib");
             await install("opencv_python_headless", "opencv-python-headless");
             await install("imageio_ffmpeg", "imageio-ffmpeg");
-            await install("spandrel", "spandrel");
             await install("dill", "dill");
             await install("ultralytics", "ultralytics");
             if (Directory.Exists($"{ComfyUIBackendExtension.Folder}/DLNodes/ComfyUI_IPAdapter_plus"))

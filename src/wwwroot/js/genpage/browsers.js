@@ -177,16 +177,14 @@ class GenPageBrowserClass {
             upButton.disabled = true;
             return pathGen;
         }
+        let rootPathPrefix = 'Root/';
         let partial = '';
-        for (let part of ("Root/" + path).split('/')) {
+        for (let part of (rootPathPrefix + path).split('/')) {
             partial += part + '/';
             let span = document.createElement('span');
             span.className = 'path-list-part';
             span.innerText = part;
-            let route = partial.substring(3, partial.length - 1);
-            if (route == '/') {
-                route = '';
-            }
+            let route = partial.substring(rootPathPrefix.length);
             let helper = new BrowserCallHelper(route, this.navCaller);
             span.onclick = helper.call.bind(helper);
             pathGen.appendChild(span);
@@ -421,6 +419,13 @@ class GenPageBrowserClass {
             div.title = stripHtmlToText(desc.description);
             img.classList.add('lazyload');
             img.dataset.src = desc.image;
+            if (desc.dragimage) {
+                img.addEventListener('dragstart', (e) => {
+                    e.dataTransfer.clearData();
+                    e.dataTransfer.setDragImage(img, 0, 0);
+                    e.dataTransfer.setData('text/uri-list', desc.dragimage);
+                });
+            }
             if (before) {
                 container.insertBefore(div, before);
             }

@@ -64,8 +64,11 @@ public static class Utilities
     /// <summary>SwarmUI's current version.</summary>
     public static readonly string Version = Assembly.GetEntryAssembly()?.GetName().Version.ToString();
 
+    /// <summary>URL to the github repo.</summary>
+    public const string RepoRoot = "https://github.com/mcmonkeyprojects/SwarmUI";
+
     /// <summary>URL to where the documentation files start.</summary>
-    public const string RepoDocsRoot = "https://github.com/mcmonkeyprojects/SwarmUI/blob/master/docs/";
+    public const string RepoDocsRoot = $"{RepoRoot}/blob/master/docs/";
 
     /// <summary>Current git commit (if known -- empty if unknown).</summary>
     public static string GitCommit = "";
@@ -461,16 +464,15 @@ public static class Utilities
 
     public static Task RunCheckedTask(Func<Task> action)
     {
-        return Task.Run(() =>
+        return Task.Run(async () =>
         {
             try
             {
-                return action();
+                await action();
             }
             catch (Exception ex)
             {
                 Logs.Error($"Internal error in async task: {ex}");
-                return Task.CompletedTask;
             }
         });
     }
@@ -840,17 +842,32 @@ public static class Utilities
         });
     }
 
+    /// <summary>MultiSemaphoreSet to prevent git calls in the same directory from overlapping.</summary>
+    public static MultiSemaphoreSet<string> GitOverlapLocks = new(32);
+
     /// <summary>Launch, run, and return the text output of, a 'git' command input.</summary>
-    public static async Task<string> RunGitProcess(string args)
+    public static async Task<string> RunGitProcess(string args, string dir = null)
     {
+        dir ??= Environment.CurrentDirectory;
+        dir = Path.GetFullPath(dir);
         ProcessStartInfo start = new("git", args)
         {
             RedirectStandardOutput = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            WorkingDirectory = dir
         };
-        Process p = Process.Start(start);
-        await p.WaitForExitAsync(Program.GlobalProgramCancel);
-        return await p.StandardOutput.ReadToEndAsync();
+        SemaphoreSlim semaphore = GitOverlapLocks.GetLock(dir);
+        semaphore.Wait();
+        try
+        {
+            Process p = Process.Start(start);
+            await p.WaitForExitAsync(Program.GlobalProgramCancel);
+            return await p.StandardOutput.ReadToEndAsync();
+        }
+        finally
+        {
+            semaphore.Release();
+        }
     }
 
     /// <summary>Deletes a file 'cleanly' by sending it to the recycle bin.</summary>

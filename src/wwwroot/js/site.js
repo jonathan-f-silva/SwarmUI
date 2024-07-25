@@ -1,5 +1,5 @@
 
-let session_id = null;
+let session_id = getCookie('session_id') || null;
 let user_id = null;
 let outputAppendUser = null;
 
@@ -197,6 +197,7 @@ function getSession(callback) {
         haveBadSession = false;
         console.log("Session started.");
         session_id = data.session_id;
+        setCookie('session_id', session_id, 31);
         user_id = data.user_id;
         outputAppendUser = data.output_append_user;
         if (lastServerVersion == null) {
@@ -448,7 +449,7 @@ function autoNumberWidth(elem) {
 }
 
 function makeGenericPopover(id, name, type, description, example) {
-    return `<div class="sui-popover" id="popover_${id}"><b>${escapeHtmlNoBr(name)}</b> (${type}):<br>&emsp;${escapeHtmlNoBr(description)}${example}</div>`;
+    return `<div class="sui-popover" id="popover_${id}"><b>${escapeHtml(name)}</b> (${type}):<br>&emsp;${safeHtmlOnly(description)}${example}</div>`;
 }
 
 function doPopoverHover(id) {
@@ -511,7 +512,6 @@ function makeSliderInput(featureid, id, paramid, name, description, value, min, 
     let [popover, featureid2] = getPopoverElemsFor(id, popover_button);
     featureid += featureid2;
     return `
-    <div class="slider-auto-container">
     <div class="auto-input auto-slider-box"${featureid}>
         <label>
             <span class="auto-input-name">${getToggleHtml(toggles, id, name)}${translateableHtml(name)}${popover}</span>
@@ -521,7 +521,7 @@ function makeSliderInput(featureid, id, paramid, name, description, value, min, 
         <div class="auto-slider-range-wrapper" style="${getRangeStyle(rangeVal, view_min, view_max)}">
             <input class="auto-slider-range" type="range" id="${id}_rangeslider" value="${rangeVal}" min="${view_min}" max="${view_max}" step="${step}" data-ispot="${isPot}" autocomplete="false" oninput="updateRangeStyle(arguments[0])" onchange="updateRangeStyle(arguments[0])">
         </div>
-    </div></div>`;
+    </div>`;
 }
 
 function makeNumberInput(featureid, id, paramid, name, description, value, min, max, step = 1, format = 'big', toggles = false, popover_button = true) {
@@ -720,7 +720,7 @@ function updateFileDragging(e, out) {
     const el = e.target.nextElementSibling;
     const mode = files.length ? "add" : "remove";
     el.classList[mode]("auto-file-input-file-drag");
-    if (files.length) {
+    if (e.preventDefault) {
         e.preventDefault();
     }
 }

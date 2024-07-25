@@ -133,20 +133,21 @@ public class Program
         {
             waitFor.Add(Utilities.RunCheckedTask(async () =>
             {
-                JObject vers = (await Utilities.UtilWebClient.GetStringAsync("https://mcmonkeyprojects.github.io/swarm/update.json", GlobalProgramCancel)).ParseToJson();
-                string versId = $"{vers["version"]}";
-                string message = $"{vers["message"]}";
-                Version remote = Version.Parse(versId);
+                await Utilities.RunGitProcess("fetch");
+                string refs = await Utilities.RunGitProcess("tag --sort=-creatordate");
+                string[] tags = [.. refs.Split('\n').Where(t => !string.IsNullOrWhiteSpace(t) && t.Contains('-') && Version.TryParse(t.Before('-'), out _)).Select(t => t.Trim()).OrderByDescending(t => Version.Parse(t.Before('-')))];
                 Version local = Version.Parse(Utilities.Version);
-                Logs.Debug($"Local version is {local}, remote version is {remote}, relative is {local.CompareTo(remote)}");
-                if (remote > local)
+                string[] newer = [.. tags.Where(t => Version.Parse(t.Before('-')) > local)];
+                if (newer.Any())
                 {
-                    Logs.Warning($"A new version of SwarmUI is available: {versId}! You are running version {Utilities.Version}. Has message: {message}");
-                    VersionUpdateMessage = $"Update available: {versId} (you are running {Utilities.Version}):\n{message}";
+                    string url = $"{Utilities.RepoRoot}/releases/tag/{newer[0]}";
+                    Logs.Warning($"A new version of SwarmUI is available: {newer[0]}! You are running version {Utilities.Version}, this is {newer.Length} release(s) behind. See release notes at {url}");
+                    VersionUpdateMessage = $"Update available: {newer[0]} (you are running {Utilities.Version}, this is {newer.Length} release(s) behind):\nSee release notes at <a target=\"_blank\" href=\"{url}\">{url}</a>"
+                        + "\nThere is a button available to automatically apply the update on the <a href=\"#Settings-Server\" onclick=\"getRequiredElementById('servertabbutton').click();getRequiredElementById('serverinfotabbutton').click();\">Server Info Tab</a>.";
                 }
                 else
                 {
-                    Logs.Init($"Swarm is up to date! Version {Utilities.Version} is the latest.");
+                    Logs.Init($"Swarm is up to date! You have version {Utilities.Version}, and {tags[0]} is the latest.");
                 }
             }));
         }
@@ -180,6 +181,7 @@ public class Program
                 }
             }
         }));
+        T2IModelClassSorter.Init();
         RunOnAllExtensions(e => e.OnPreInit());
         timer.Check("Extension PreInit");
         Logs.Init("Prepping options...");
@@ -289,12 +291,13 @@ public class Program
         try
         {
             Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDModelFolder));
+            Directory.CreateDirectory($"{modelRoot}/upscale_models");
+            Directory.CreateDirectory($"{modelRoot}/clip");
         }
         catch (IOException ex)
         {
-            Logs.Error($"Failed to create directory for SD models. You may need to check your ModelRoot and SDModelFolder settings. {ex.Message}");
+            Logs.Error($"Failed to create directories for models. You may need to check your ModelRoot or SDModelFolder settings. {ex.Message}");
         }
-        Directory.CreateDirectory($"{modelRoot}/upscale_models");
         T2IModelSets["Stable-Diffusion"] = new() { ModelType = "Stable-Diffusion", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDModelFolder), Utilities.CombinePathWithAbsolute(modelRoot, "tensorrt")] };
         T2IModelSets["VAE"] = new() { ModelType = "VAE", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDVAEFolder)] };
         T2IModelSets["LoRA"] = new() { ModelType = "LoRA", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDLoraFolder)] };
@@ -449,6 +452,17 @@ public class Program
         if (legacyLogLevel is not null && newLogLevel is null)
         {
             section.Set("Logs.LogLevel", legacyLogLevel);
+        }
+        // TODO: Legacy format patch from Beta 0.9!
+        bool? modelPerFolder = section.GetBool("Paths.ModelMetadataPerFolder", null);
+        if (modelPerFolder.HasValue)
+        {
+            section.Set("Metadata.ModelMetadataPerFolder", modelPerFolder.Value);
+        }
+        bool? imagePerFolder = section.GetBool("Paths.ImageMetadataPerFolder", null);
+        if (imagePerFolder.HasValue)
+        {
+            section.Set("Metadata.ImageMetadataPerFolder", imagePerFolder.Value);
         }
         ServerSettings.Load(section);
     }

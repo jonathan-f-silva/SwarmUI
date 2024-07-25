@@ -39,6 +39,23 @@ public class T2IParamInput
                 input.Set(T2IParamTypes.Height, height);
                 input.Remove(T2IParamTypes.AltResolutionHeightMult);
             }
+        },
+        input =>
+        {
+            if (input.TryGet(T2IParamTypes.Loras, out List<string> loras))
+            {
+                List<string> weights = input.Get(T2IParamTypes.LoraWeights, []);
+                if (weights.Count != loras.Count)
+                {
+                    Logs.Warning($"Input has {loras.Count} loras, but {weights.Count} weights - the two lists must match to work properly. Applying an automatic fix.");
+                    weights = [.. weights.Take(loras.Count)];
+                    while (weights.Count < loras.Count)
+                    {
+                        weights.Add("1");
+                    }
+                    input.Set(T2IParamTypes.LoraWeights, weights);
+                }
+            }
         }
     ];
 
@@ -202,7 +219,9 @@ public class T2IParamInput
             }
             return $"[{rawVals.JoinString("|")}]";
         };
+        PromptTagProcessors["alt"] = PromptTagProcessors["alternate"];
         PromptTagLengthEstimators["alternate"] = PromptTagLengthEstimators["random"];
+        PromptTagLengthEstimators["alt"] = PromptTagLengthEstimators["alternate"];
         PromptTagProcessors["fromto"] = (data, context) =>
         {
             double? stepIndex = InterpretNumber(context.PreData);
@@ -255,6 +274,7 @@ public class T2IParamInput
             }
             return result.Trim();
         };
+        PromptTagProcessors["wc"] = PromptTagProcessors["wildcard"];
         PromptTagLengthEstimators["wildcard"] = (data) =>
         {
             string card = T2IParamTypes.GetBestInList(data, WildcardsHelper.ListFiles);
@@ -276,6 +296,7 @@ public class T2IParamInput
             }
             return longestStr;
         };
+        PromptTagLengthEstimators["wc"] = PromptTagLengthEstimators["wildcard"];
         PromptTagProcessors["repeat"] = (data, context) =>
         {
             (string count, string value) = data.BeforeAndAfter(',');
@@ -324,10 +345,12 @@ public class T2IParamInput
             }
             return "";
         };
+        PromptTagProcessors["p"] = PromptTagProcessors["preset"];
         PromptTagLengthEstimators["preset"] = (data) =>
         {
             return "";
         };
+        PromptTagLengthEstimators["p"] = PromptTagLengthEstimators["preset"];
         PromptTagProcessors["embed"] = (data, context) =>
         {
             data = context.Parse(data);
@@ -356,43 +379,41 @@ public class T2IParamInput
             }
             context.Loras ??= [.. Program.T2IModelSets["LoRA"].ListModelNamesFor(context.Input.SourceSession)];
             string matched = T2IParamTypes.GetBestModelInList(lora, context.Loras);
-            if (matched is not null)
+            if (matched is null)
             {
-                List<string> loraList = context.Input.Get(T2IParamTypes.Loras);
-                List<string> weights = context.Input.Get(T2IParamTypes.LoraWeights);
-                List<string> confinements = context.Input.Get(T2IParamTypes.LoraSectionConfinement);
-                if (loraList is null)
-                {
-                    loraList = [];
-                    weights = [];
-                }
-                loraList.Add(matched);
-                weights.Add(strength.ToString());
-                context.Input.Set(T2IParamTypes.Loras, loraList);
-                context.Input.Set(T2IParamTypes.LoraWeights, weights);
-                if (context.SectionID > 0)
-                {
-                    if (confinements is null)
-                    {
-                        confinements = [];
-                        for (int i = 0; i < loraList.Count - 1; i++)
-                        {
-                            confinements.Add("0");
-                        }
-                    }
-                    Logs.Verbose($"LoRA {lora} confined to section {context.SectionID}.");
-                    confinements.Add($"{context.SectionID}");
-                    context.Input.Set(T2IParamTypes.LoraSectionConfinement, confinements);
-                }
-                return "";
+                Logs.Warning($"Lora '{lora}' does not exist and will be ignored.");
+                return null;
             }
-            Logs.Warning($"Lora '{lora}' does not exist and will be ignored.");
-            return null;
+            List<string> loraList = context.Input.Get(T2IParamTypes.Loras) ?? [];
+            List<string> weights = context.Input.Get(T2IParamTypes.LoraWeights) ?? [];
+            List<string> confinements = context.Input.Get(T2IParamTypes.LoraSectionConfinement);
+            if (confinements is not null && confinements.Count > loraList.Count)
+            {
+                context.Input.Remove(T2IParamTypes.LoraSectionConfinement);
+                confinements = null;
+            }
+            loraList.Add(matched);
+            weights.Add(strength.ToString());
+            context.Input.Set(T2IParamTypes.Loras, loraList);
+            context.Input.Set(T2IParamTypes.LoraWeights, weights);
+            if (confinements is null)
+            {
+                confinements = [];
+                for (int i = 0; i < loraList.Count - 1; i++)
+                {
+                    confinements.Add("-1");
+                }
+            }
+            Logs.Verbose($"LoRA {lora} confined to section {context.SectionID}.");
+            confinements.Add($"{context.SectionID}");
+            context.Input.Set(T2IParamTypes.LoraSectionConfinement, confinements);
+            return "";
         };
         PromptTagPostProcessors["segment"] = (data, context) =>
         {
             context.SectionID++;
-            return $"<{context.RawCurrentTag}//cid={context.SectionID}>";
+            string raw = context.RawCurrentTag.Before("//cid=");
+            return $"<{raw}//cid={context.SectionID}>";
         };
         PromptTagPostProcessors["object"] = PromptTagPostProcessors["segment"];
         PromptTagPostProcessors["region"] = PromptTagPostProcessors["segment"];
@@ -635,7 +656,7 @@ public class T2IParamInput
         string fixedVal = val.Replace('\0', '\a').Replace("\a", "");
         PromptTagContext context = new() { Input = this, Param = param.Type.ID };
         fixedVal = ProcessPromptLike(fixedVal, context);
-        if (fixedVal != val)
+        if (fixedVal != val && !ExtraMeta.ContainsKey($"original_{param.Type.ID}"))
         {
             ExtraMeta[$"original_{param.Type.ID}"] = val;
         }

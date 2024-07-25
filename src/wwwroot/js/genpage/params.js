@@ -251,9 +251,9 @@ function genInputs(delay_final = false) {
         let inputWidth = document.getElementById('input_width');
         let inputHeight = document.getElementById('input_height');
         if (inputAspectRatio && inputWidth && inputHeight) {
-            let inputWidthParent = findParentOfClass(inputWidth, 'slider-auto-container');
+            let inputWidthParent = findParentOfClass(inputWidth, 'auto-slider-box');
             let inputWidthSlider = getRequiredElementById('input_width_rangeslider');
-            let inputHeightParent = findParentOfClass(inputHeight, 'slider-auto-container');
+            let inputHeightParent = findParentOfClass(inputHeight, 'auto-slider-box');
             let inputHeightSlider = getRequiredElementById('input_height_rangeslider');
             let resGroupLabel = findParentOfClass(inputWidth, 'input-group').querySelector('.header-label');
             let resTrick = () => {
@@ -261,11 +261,15 @@ function genInputs(delay_final = false) {
                 if (inputAspectRatio.value == "Custom") {
                     inputWidthParent.style.display = 'block';
                     inputHeightParent.style.display = 'block';
+                    delete inputWidthParent.dataset.visible_controlled;
+                    delete inputHeightParent.dataset.visible_controlled;
                     aspect = describeAspectRatio(inputWidth.value, inputHeight.value);
                 }
                 else {
                     inputWidthParent.style.display = 'none';
                     inputHeightParent.style.display = 'none';
+                    inputWidthParent.dataset.visible_controlled = 'true';
+                    inputHeightParent.dataset.visible_controlled = 'true';
                     aspect = inputAspectRatio.value;
                 }
                 resGroupLabel.innerText = `${translate('Resolution')}: ${aspect} (${inputWidth.value}x${inputHeight.value})`;
@@ -375,6 +379,9 @@ function genInputs(delay_final = false) {
                 doToggleEnable(`input_${param.id}`);
                 if (!param.do_not_save) {
                     toggler.addEventListener('change', () => {
+                        if (!toggler.checked) {
+                            deleteCookie(`lastparam_input_${param.id}`);
+                        }
                         setCookie(`lastparam_input_${param.id}_toggle`, toggler.checked, 0.25);
                     });
                 }
@@ -436,9 +443,7 @@ function genInputs(delay_final = false) {
 }
 
 function toggle_advanced() {
-    let advancedArea = getRequiredElementById('main_inputs_area_advanced');
     let toggler = getRequiredElementById('advanced_options_checkbox');
-    advancedArea.style.display = toggler.checked ? 'block' : 'none';
     localStorage.setItem('display_advanced', toggler.checked);
     for (let param of gen_param_types) {
         if (param.toggleable) {
@@ -479,7 +484,7 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
             let container = findParentOfClass(elem, 'auto-input');
             let addedImageArea = container.querySelector('.added-image-area');
             addedImageArea.style.display = '';
-            let imgs = [...addedImageArea.children].filter(c => c.tagName == "IMG");
+            let imgs = [...addedImageArea.querySelectorAll('.alt-prompt-image')].filter(c => c.tagName == "IMG");
             if (imgs.length > 0) {
                 input["promptimages"] = imgs.map(img => img.dataset.filedata).join('|');
             }
@@ -489,7 +494,7 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
         input['automaticvae'] = true;
     }
     let revisionImageArea = getRequiredElementById('alt_prompt_image_area');
-    let revisionImages = [...revisionImageArea.children].filter(c => c.tagName == "IMG");
+    let revisionImages = [...revisionImageArea.querySelectorAll('.alt-prompt-image')].filter(c => c.tagName == "IMG");
     if (revisionImages.length > 0) {
         input["promptimages"] = revisionImages.map(img => img.dataset.filedata).join('|');
     }
@@ -680,7 +685,8 @@ function hideUnsupportableParams() {
     }
     let groups = {};
     let advancedCount = 0;
-    let toggler = getRequiredElementById('advanced_options_checkbox');
+    let advancedToggler = getRequiredElementById('advanced_options_checkbox');
+    let showAdvanced = advancedToggler.checked;
     for (let param of gen_param_types) {
         let elem = document.getElementById(`input_${param.id}`);
         if (elem) {
@@ -693,17 +699,16 @@ function hideUnsupportableParams() {
             }
             param.feature_missing = !supported;
             let show = supported && param.visible;
-            if (hideUnaltered) {
-                let paramToggler = document.getElementById(`input_${param.id}_toggle`);
-                let isAltered = paramToggler ? paramToggler.checked : `${getInputVal(elem)}` != param.default;
-                if (param.group && param.group.toggles && !getRequiredElementById(`input_group_content_${param.group.id}_toggle`).checked) {
-                    isAltered = false;
-                }
-                if (!isAltered) {
-                    show = false;
-                }
+            let paramToggler = document.getElementById(`input_${param.id}_toggle`);
+            let isAltered = paramToggler ? paramToggler.checked : `${getInputVal(elem)}` != param.default;
+            if (param.group && param.group.toggles && !getRequiredElementById(`input_group_content_${param.group.id}_toggle`).checked) {
+                isAltered = false;
             }
-            if (param.advanced && !toggler.checked) {
+            if (hideUnaltered && !isAltered) {
+                show = false;
+            }
+            let isAdvanced = param.advanced || (param.group && param.group.advanced);
+            if (isAdvanced && !showAdvanced && !isAltered) {
                 show = false;
             }
             if (!filterShow) {
@@ -768,7 +773,7 @@ function cleanParamName(name) {
     return name.toLowerCase().replaceAll(/[^a-z]/g, '');
 }
 
-/** Sets the value of a parameter to the value used in the currently selected image, if any. */
+/** Sets the value of a parameter to the value used in the currently selected image, if any. (eg for seeds, not the 'reuse parameters' button.) */
 function reuseLastParamVal(paramId) {
     if (!currentMetadataVal) {
         return;
@@ -1138,6 +1143,7 @@ class PromptTabCompleteClass {
             let prefixLow = prefix.toLowerCase();
             return allWildcards.filter(w => w.toLowerCase().includes(prefixLow));
         });
+        this.registerAltPrefix('wc', 'wildcard');
         this.registerPrefix('wildcard[2-4]', 'Select multiple random lines from a wildcard file (presaved list of options) (works same as "random" but for wildcards)', (prefix) => {
             let prefixLow = prefix.toLowerCase();
             return allWildcards.filter(w => w.toLowerCase().includes(prefixLow));
@@ -1149,10 +1155,12 @@ class PromptTabCompleteClass {
             let prefixLow = prefix.toLowerCase();
             return allPresets.map(p => p.title).filter(p => p.toLowerCase().includes(prefixLow));
         });
+        this.registerAltPrefix('p', 'preset');
         this.registerPrefix('embed', 'Use a pretrained CLIP TI Embedding', (prefix) => {
             let prefixLow = prefix.toLowerCase();
             return coreModelMap['Embedding'].map(cleanModelName).filter(e => e.toLowerCase().includes(prefixLow));
         });
+        this.registerAltPrefix('embedding', 'embed');
         this.registerPrefix('lora', 'Forcibly apply a pretrained LoRA model (useful eg inside wildcards or other automatic inclusions - normally use the LoRAs UI tab)', (prefix) => {
             let prefixLow = prefix.toLowerCase();
             return coreModelMap['LoRA'].map(cleanModelName).filter(m => m.toLowerCase().includes(prefixLow));
@@ -1166,10 +1174,13 @@ class PromptTabCompleteClass {
         this.registerPrefix('segment', 'Automatically segment an area by CLIP matcher and inpaint it (optionally with a unique prompt)', (prefix) => {
             let prefixLow = prefix.toLowerCase();
             if (prefixLow.startsWith('yolo-')) {
-                let yolomodels = rawGenParamTypesFromServer.filter(p => p.id == 'yolomodelinternal')[0].values;
-                return yolomodels.map(m => `yolo-${m}`).filter(m => m.toLowerCase().includes(prefixLow));
+                let modelList = rawGenParamTypesFromServer.filter(p => p.id == 'yolomodelinternal');
+                if (modelList && modelList.length > 0) {
+                    let yolomodels = modelList[0].values;
+                    return yolomodels.map(m => `yolo-${m}`).filter(m => m.toLowerCase().includes(prefixLow));
+                }
             }
-            return ['\nSpecify before the ">" some text to match against in the image, like "<segment:face>".', '\nCan also do "<segment:text,creativity,threshold>" eg "face,0.6,0.5" where creativity is InitImageCreativity, and threshold is mask matching threshold for CLIP-Seg.', '\nYou may use the "yolo-" prefix to use a YOLOv8 seg model,', '\nor format "yolo-<model>-1" to get specifically the first result from a YOLOv8 match list.'];
+            return ['\nSpecify before the ">" some text to match against in the image, like "<segment:face>".', '\nCan also do "<segment:text,creativity,threshold>" eg "face,0.6,0.5" where creativity is InitImageCreativity, and threshold is mask matching threshold for CLIP-Seg.', '\nYou can use a negative threshold value like "<segment:face,0.6,-0.5>" to invert the mask.', '\nYou may use the "yolo-" prefix to use a YOLOv8 seg model,', '\nor format "yolo-<model>-1" to get specifically the first result from a YOLOv8 match list.'];
         });
         this.registerPrefix('clear', 'Automatically clear part of the image to transparent (by CLIP segmentation matching) (iffy quality, prefer the Remove Background parameter over this)', (prefix) => {
             return ['\nSpecify before the ">" some text to match against in the image, like "<segment:background>"'];
@@ -1188,7 +1199,12 @@ class PromptTabCompleteClass {
     }
 
     registerPrefix(name, description, completer, selfStanding = false) {
-        this.prefixes[name] = { name, description, completer, selfStanding };
+        this.prefixes[name] = { name, description, completer, selfStanding, isAlt: false };
+    }
+
+    registerAltPrefix(name, copyFrom) {
+        let data = this.prefixes[copyFrom];
+        this.prefixes[name] = { name, description: data.description, completer: data.completer, selfStanding: data.selfStanding, isAlt: true };
     }
 
     getPromptBeforeCursor(box) {
@@ -1257,7 +1273,7 @@ class PromptTabCompleteClass {
         let colon = content.indexOf(':');
         if (colon == -1) {
             content = content.toLowerCase();
-            return Object.keys(this.prefixes).filter(p => p.toLowerCase().startsWith(content)).map(p => [p, this.prefixes[p].description]);
+            return Object.keys(this.prefixes).filter(p => p.toLowerCase().startsWith(content) && !this.prefixes[p].isAlt).map(p => [p, this.prefixes[p].description]);
         }
         let prefix = content.substring(0, colon);
         let suffix = content.substring(colon + 1);
