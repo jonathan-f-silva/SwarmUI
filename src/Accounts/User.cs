@@ -237,7 +237,7 @@ public class User
         string simplifyModel(string model)
         {
             model = model.Replace('\\', '/').Trim();
-            if (model.EndsWith(".safetensors") || model.EndsWith(".ckpt"))
+            if (model.EndsWith(".safetensors") || model.EndsWith(".sft") || model.EndsWith(".ckpt"))
             {
                 model = model.BeforeLast('.');
             }
@@ -263,7 +263,7 @@ public class User
                 "negative_prompt" => user_input.Get(T2IParamTypes.NegativePrompt),
                 "seed" => $"{user_input.Get(T2IParamTypes.Seed)}",
                 "cfg_scale" => $"{user_input.Get(T2IParamTypes.CFGScale)}",
-                "width" => $"{user_input.Get(T2IParamTypes.Width)}",
+                "width" => $"{user_input.GetImageWidth()}",
                 "height" => $"{user_input.GetImageHeight()}",
                 "steps" => $"{user_input.Get(T2IParamTypes.Steps)}",
                 "model" => simplifyModel(user_input.Get(T2IParamTypes.Model)?.Name ?? "unknown"),

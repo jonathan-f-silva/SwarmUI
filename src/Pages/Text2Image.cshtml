@@ -192,6 +192,42 @@
                         <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#gen_previews_missing_preset_modal').modal('hide')">Cancel</button>
                     </div>
                 @WebUtil.ModalFooter()
+                @WebUtil.ModalHeader("sam2_installer", "Install SAM2")
+                    <div class="modal-body">
+                        Full image auto-segmentation is made available via Segment-Anything-2 created by Meta AI (Apache 2 License), and ComfyUI nodepack for it created by kijai (Apache 2 License).
+                        <br>
+                        <br>When used, it will generate an autosegmentation of the current image and provide the result as a layer in the image editor.
+                        <br>You can then use the paintbucket tool to fill mask with sections you want, then delete or hide the segment layer.
+                    </div>
+                    <div class="modal-footer" id="install_sam2_button">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="installSAM2()">Install</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#sam2_installer').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                @WebUtil.ModalHeader("bnb_nf4_installer", "Install BnB NF4 Support")
+                    <div class="modal-body">
+                        The model you're trying to use appears to be a Bits-and-Bytes NF4 format model.
+                        <br>
+                        <br>This requires an extension released by comfyanonymous and lllyasviel (AGPL license) to run. Would you like to install it?
+                    </div>
+                    <div class="modal-footer" id="install_bnbnf4_button">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="installBNBNF4()">Install</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#bnb_nf4_installer').modal('hide');localStorage.setItem('hide_bnb_nf4_check', 'true')">No and don't show again</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#bnb_nf4_installer').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                @WebUtil.ModalHeader("gguf_installer", "Install GGUF Support")
+                    <div class="modal-body">
+                        The model you're trying to use appears to be a GGUF format model.
+                        <br>
+                        <br>This requires an extension released by city96 to run. Would you like to install it?
+                    </div>
+                    <div class="modal-footer" id="install_gguf_button">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="installGGUF()">Install</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#gguf_installer').modal('hide');localStorage.setItem('hide_gguf_check', 'true')">No and don't show again</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#gguf_installer').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
             </div>
         </div>
         <div class="t2i-mid-split-bar splitter-bar" id="t2i-mid-split-bar"><div class="t2i-split-quickbutton t2i-mid-split-quickbutton" id="t2i-mid-split-quickbutton">&#x290B;</div></div>
@@ -578,11 +614,12 @@
                 </div>
                 <div class="model-downloader-section-wrapper">
                     <div class="model-downloader-main-section">
-                        <div class="card-center-container" style="min-width: 30rem">
+                        <div style="width: 100%">
                             <br>@WebUtil.TextPopoverButton("modeldownloaderurl", "Exact web URL to the model.\nCivitai URLs are fully supported and will load metadata.\nHuggingFace URLs will be recognized.\nFor anything else, make sure the URL is a direct download URL, not a webpage.\nNote only '.safetensors' models are allowed.") <b>URL</b>: <input type="text" id="model_downloader_url" class="auto-text auto-text-wide" placeholder="Model URL" oninput="modelDownloader.urlInput()" autocomplete="off" />
                             <br>
-                            <br><div style="text-align: center">@WebUtil.TextPopoverButton("modeldownloaderstatus", "This section will update after you input a URL to inform you if the URL is valid.\nThe box below will display loaded metadata if you use a civitai URL.") <b>Status</b>: <span id="model_downloader_status">(...)</span></div>
+                            <br><div>@WebUtil.TextPopoverButton("modeldownloaderstatus", "This section will update after you input a URL to inform you if the URL is valid.\nThe box below will display loaded metadata if you use a civitai URL.") <b>Status</b>: <span id="model_downloader_status">(...)</span></div>
                             <div class="model_downloader_metadatazone" id="model_downloader_metadatazone"></div>
+                            <div class="model_downloader_imageside" id="model_downloader_imageside"></div>
                             <br>@WebUtil.TextPopoverButton("modeldownloadertype", "The base model sub-type to use, ie what category it gets saved to.\nMake sure this is correct, you don't want a LoRA in your base models folder or similar.\nCivitai links will autoset this when they load metadata.") <b>Model Type</b>: <select class="auto-dropdown" id="model_downloader_type" autocomplete="off">
                                 <option value="Stable-Diffusion">Base Model</option>
                                 <option value="LoRA">LoRA</option>
@@ -590,6 +627,7 @@
                                 <option value="Embedding">Embedding</option>
                                 <option value="ControlNet">ControlNet</option>
                             </select>
+                            <br>@WebUtil.TextPopoverButton("modeldownloaderfolder", "What folder to put the model in.\nTo create new folders, simply type paths with '/' in them into the 'Save as:' name box below.") <b>Folder</b>: <select class="auto-dropdown" id="model_downloader_folder" autocomplete="off"></select>
                             <br>
                             <br>@WebUtil.TextPopoverButton("modeldownloadersaveas", "File name to save as. Don't include the '.safetensors' file extension, just the name.\nYou can use a folder path with the '/' symbol.") <b>Save as</b>: <input type="text" id="model_downloader_name" class="auto-text auto-text-wide" placeholder="Model Name" autocomplete="off" oninput="modelDownloader.nameInput()" />
                             <br>
@@ -787,6 +825,18 @@
                             </div>
                         </div>
                     }
+                    @if (Program.CurrentGitDate == "Git failed to load")
+                    {
+                        <div class="card border-danger mb-3 card-center-container">
+                            <div class="card-header">Git Failed To Load</div>
+                            <div class="card-body">
+                                <p id="git_failed_message" class="card-text">
+                                    You seem to have installed SwarmUI improperly. Many features, including auto-updating, will not work.
+                                    <br>Please install SwarmUI as explained in <a href="https://github.com/mcmonkeyprojects/SwarmUI?tab=readme-ov-file#installing-on-windows">The readme install instructions.</a>
+                                </p>
+                            </div>
+                        </div>
+                    }
                 </div>
                 <div class="card-collection-inline">
                     <div class="card border-danger mb-3 card-center-container">
@@ -840,7 +890,21 @@
                 <div style="height: 10rem"></div> <!-- Spacer -->
             </div>
             <div class="tab-pane" id="Server-Logs" role="tabpanel">
-                <center>View: <select id="server_log_type_selector"></select> Filter: <input type="text" id="server_log_filter" placeholder="Filter" /></center>
+                @WebUtil.ModalHeader("do_log_pastebin_modal", "Submit Logs To Pastebin")
+                    <div class="modal-body">
+                        <p class="translate">This will submit the text of your server logs to a <a href="https://paste.denizenscript.com/New/Swarm">public pastebin service</a>. This is to make it easy to share debug logs when getting support on the <a href="https://discord.gg/q2y38cqjNw">SwarmUI discord</a>.</p>
+                        <p class="translate">Once submitted, your server logs will be visible to the public and not easily deletable. Please ensure your logs do not contain private information (eg personal prompts) before autosubmitting.</p>
+                        <p class="translate">(If your logs do have private information, please restart and replicate whatever you need to show, then pastebin the logs).</p>
+                        <p class="translate">(Alternately, you can manually submit and edit the content first via <a href="https://paste.denizenscript.com/New/Swarm">this link</a>, just be sure not to delete anything important).</p>
+                        <span class="translate">Which minimum log level would you like to submit?</span> <select id="log_pastebin_type" autocomplete="off"><option>verbose</option><option selected>debug</option><option>info</option></select>
+                        <div id="log_pastebin_result_area"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-primary basic-button translate" id="log_submit_pastebin_button">Submit</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" id="log_cancel_pastebin_button" onclick="$('#do_log_pastebin_modal').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                <center>View: <select id="server_log_type_selector"></select> Filter: <input type="text" id="server_log_filter" placeholder="Filter" /> <button class="basic-button" id="server_log_pastebin">Pastebin</button></center>
                 <div id="server_logs_container" class="server_logs_container"></div>
             </div>
         </div>

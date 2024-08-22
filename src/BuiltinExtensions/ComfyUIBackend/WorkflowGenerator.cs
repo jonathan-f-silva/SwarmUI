@@ -142,6 +142,13 @@ public class WorkflowGenerator
         return clazz is not null && clazz == "stable-diffusion-v3-medium";
     }
 
+    /// <summary>Returns true if the current model is Black Forest Labs' Flux.1.</summary>
+    public bool IsFlux()
+    {
+        string clazz = CurrentCompatClass();
+        return clazz is not null && clazz == "flux-1";
+    }
+
     /// <summary>Gets a dynamic ID within a semi-stable registration set.</summary>
     public string GetStableDynamicID(int index, int offset)
     {
@@ -203,7 +210,7 @@ public class WorkflowGenerator
             {
                 Logs.Error($"Failed to download {name} from {url}: {ex.Message}");
                 File.Delete(filePath);
-                throw new InvalidOperationException("Required model download failed.");
+                throw new SwarmReadableErrorException("Required model download failed.");
             }
             Logs.Info($"Downloading complete, continuing.");
         }
@@ -229,7 +236,7 @@ public class WorkflowGenerator
             {
                 if (!loraHandler.Models.TryGetValue(loras[i], out lora))
                 {
-                    throw new InvalidDataException($"LoRA Model '{loras[i]}' not found in the model set.");
+                    throw new SwarmUserErrorException($"LoRA Model '{loras[i]}' not found in the model set.");
                 }
             }
             if (confinements is not null && confinements.Count > i)
@@ -267,7 +274,7 @@ public class WorkflowGenerator
         {
             result = CreateNode("SwarmLoadImageB64", new JObject()
             {
-                ["image_base64"] = (resize ? img.Resize(UserInput.Get(T2IParamTypes.Width), UserInput.GetImageHeight()) : img).AsBase64
+                ["image_base64"] = (resize ? img.Resize(UserInput.GetImageWidth(), UserInput.GetImageHeight()) : img).AsBase64
             }, nodeId);
         }
         else
@@ -326,7 +333,7 @@ public class WorkflowGenerator
         string scaledImage = CreateNode("SwarmImageScaleForMP", new JObject()
         {
             ["image"] = new JArray() { croppedImage, 0 },
-            ["width"] = model?.StandardWidth <= 0 ? UserInput.Get(T2IParamTypes.Width, 1024) : model.StandardWidth,
+            ["width"] = model?.StandardWidth <= 0 ? UserInput.GetImageWidth() : model.StandardWidth,
             ["height"] = model?.StandardHeight <= 0 ? UserInput.GetImageHeight() : model.StandardHeight,
             ["can_shrink"] = true
         });
@@ -449,6 +456,41 @@ public class WorkflowGenerator
             DownloadModel(name, filePath, url);
             ClipModelsValid.Add(name);
         }
+        string getT5XXLModel()
+        {
+            if (UserInput.TryGet(ComfyUIBackendExtension.T5XXLModel, out string model))
+            {
+                return model;
+            }
+            requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
+            return "t5xxl_enconly.safetensors";
+        }
+        string getClipLModel()
+        {
+            if (UserInput.TryGet(ComfyUIBackendExtension.ClipLModel, out string model))
+            {
+                return model;
+            }
+            if (ComfyUIBackendExtension.ClipModels.Contains("clip_l_sdxl_base.safetensors"))
+            {
+                return "clip_l_sdxl_base.safetensors";
+            }
+            requireClipModel("clip_l.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder/model.fp16.safetensors");
+            return "clip_l.safetensors";
+        }
+        string getClipGModel()
+        {
+            if (UserInput.TryGet(ComfyUIBackendExtension.ClipGModel, out string model))
+            {
+                return model;
+            }
+            if (ComfyUIBackendExtension.ClipModels.Contains("clip_g_sdxl_base.safetensors"))
+            {
+                return "clip_g_sdxl_base.safetensors";
+            }
+            requireClipModel("clip_g.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder_2/model.fp16.safetensors");
+            return "clip_g.safetensors";
+        }
         IsDifferentialDiffusion = false;
         LoadingModelType = type;
         if (!noCascadeFix && model.ModelClass?.ID == "stable-cascade-v1-stage-b" && model.Name.Contains("stage_b") && Program.MainSDModels.Models.TryGetValue(model.Name.Replace("stage_b", "stage_c"), out T2IModel altCascadeModel))
@@ -469,7 +511,7 @@ public class WorkflowGenerator
             T2IModel[] sameArch = [.. Program.MainSDModels.Models.Values.Where(m => m.ModelClass?.ID == baseArch)];
             if (sameArch.Length == 0)
             {
-                throw new InvalidDataException($"No models found with architecture {baseArch}, cannot load CLIP/VAE for this Arch");
+                throw new SwarmUserErrorException($"No models found with architecture {baseArch}, cannot load CLIP/VAE for this Arch");
             }
             T2IModel matchedName = sameArch.FirstOrDefault(m => m.Name.Before('.') == model.Name.Before('.'));
             matchedName ??= sameArch.First();
@@ -482,7 +524,7 @@ public class WorkflowGenerator
         }
         else if (model.Name.EndsWith(".engine"))
         {
-            throw new InvalidDataException($"Model {model.Name} appears to be TensorRT lacks metadata to identify its architecture, cannot load");
+            throw new SwarmUserErrorException($"Model {model.Name} appears to be TensorRT lacks metadata to identify its architecture, cannot load");
         }
         else if (model.ModelClass?.CompatClass == "pixart-ms-sigma-xl-2")
         {
@@ -492,27 +534,67 @@ public class WorkflowGenerator
                 ["model"] = model.ModelClass.ID == "pixart-ms-sigma-xl-2-2k" ? "PixArtMS_Sigma_XL_2_2K" : "PixArtMS_Sigma_XL_2"
             }, id);
             LoadingModel = [pixartNode, 0];
-            requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
             string singleClipLoader = CreateNode("CLIPLoader", new JObject()
             {
-                ["clip_name"] = "t5xxl_enconly.safetensors",
+                ["clip_name"] = getT5XXLModel(),
                 ["type"] = "sd3"
             });
             LoadingClip = [singleClipLoader, 0];
             string xlVae = UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultSDXLVAE;
-            if (string.IsNullOrWhiteSpace(xlVae))
+            if (string.IsNullOrWhiteSpace(xlVae) || xlVae == "None")
             {
                 xlVae = Program.T2IModelSets["VAE"].Models.Keys.FirstOrDefault(m => m.ToLowerFast().Contains("sdxl"));
             }
             if (string.IsNullOrWhiteSpace(xlVae))
             {
-                throw new InvalidDataException("No default SDXL VAE found, please download an SDXL VAE and set it as default in User Settings");
+                throw new SwarmUserErrorException("No default SDXL VAE found, please download an SDXL VAE and set it as default in User Settings");
             }
             string vaeLoader = CreateNode("VAELoader", new JObject()
             {
                 ["vae_name"] = xlVae
             });
             LoadingVAE = [vaeLoader, 0];
+        }
+        else if (model.OriginatingFolderPath.Replace('\\', '/').EndsWith("/unet")) // Hacky but it works for now
+        {
+            if (model.Metadata?.SpecialFormat == "gguf")
+            {
+                if (!Features.Contains("gguf"))
+                {
+                    throw new SwarmUserErrorException("This model is in GGUF format, but the server does not have GGUF support installed. Cannot run.");
+                }
+                string modelNode = CreateNode("UnetLoaderGGUF", new JObject()
+                {
+                    ["unet_name"] = model.ToString(ModelFolderFormat)
+                }, id);
+                LoadingModel = [modelNode, 0];
+            }
+            else
+            {
+                string dtype = UserInput.Get(ComfyUIBackendExtension.PreferredDType, "automatic");
+                string modelNode = CreateNode("UNETLoader", new JObject()
+                {
+                    ["unet_name"] = model.ToString(ModelFolderFormat),
+                    ["weight_dtype"] = dtype == "automatic" ? (IsFlux() ? "fp8_e4m3fn" : "default") : dtype
+                }, id);
+                LoadingModel = [modelNode, 0];
+            }
+            LoadingClip = null;
+            LoadingVAE = null;
+        }
+        else if (model.Metadata?.SpecialFormat == "bnb_nf4")
+        {
+            if (!Features.Contains("bnb_nf4"))
+            {
+                throw new SwarmUserErrorException("This model is in BitsAndBytes-NF4 format, but the server does not have BNB_NF4 support installed. Cannot run.");
+            }
+            string modelNode = CreateNode("CheckpointLoaderNF4", new JObject()
+            {
+                ["ckpt_name"] = model.ToString(ModelFolderFormat)
+            }, id);
+            LoadingModel = [modelNode, 0];
+            LoadingClip = [modelNode, 1];
+            LoadingVAE = [modelNode, 2];
         }
         else
         {
@@ -525,7 +607,7 @@ public class WorkflowGenerator
             LoadingVAE = [modelNode, 2];
         }
         string predType = model.Metadata?.PredictionType;
-        if (CurrentCompatClass() == "stable-diffusion-v3-medium")
+        if (IsSD3())
         {
             string sd3Node = CreateNode("ModelSamplingSD3", new JObject()
             {
@@ -550,17 +632,16 @@ public class WorkflowGenerator
             if (mode == "CLIP + T5" && tencs.Contains("clip_l") && tencs.Contains("t5xxl")) { mode = null; }
             if (mode is not null)
             {
-                requireClipModel("clip_g_sdxl_base.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder_2/model.fp16.safetensors");
-                requireClipModel("clip_l_sdxl_base.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder/model.fp16.safetensors");
-                if (mode.Contains("T5"))
-                {
-                    requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
-                }
                 if (mode == "T5 Only")
                 {
-                    string singleClipLoader = CreateNode("CLIPLoader", new JObject()
+                    string loaderType = "CLIPLoader";
+                    if (getT5XXLModel().EndsWith(".gguf"))
                     {
-                        ["clip_name"] = "t5xxl_enconly.safetensors",
+                        loaderType = "CLIPLoaderGGUF";
+                    }
+                    string singleClipLoader = CreateNode(loaderType, new JObject()
+                    {
+                        ["clip_name"] = getT5XXLModel(),
                         ["type"] = "sd3"
                     });
                     LoadingClip = [singleClipLoader, 0];
@@ -569,31 +650,66 @@ public class WorkflowGenerator
                 {
                     string dualClipLoader = CreateNode("DualCLIPLoader", new JObject()
                     {
-                        ["clip_name1"] = "clip_g_sdxl_base.safetensors",
-                        ["clip_name2"] = "clip_l_sdxl_base.safetensors",
+                        ["clip_name1"] = getClipGModel(),
+                        ["clip_name2"] = getClipLModel(),
                         ["type"] = "sd3"
                     });
                     LoadingClip = [dualClipLoader, 0];
                 }
                 else
                 {
-                    string tripleClipLoader = CreateNode("TripleCLIPLoader", new JObject()
+                    string loaderType = "TripleCLIPLoader";
+                    if (getT5XXLModel().EndsWith(".gguf"))
                     {
-                        ["clip_name1"] = "clip_g_sdxl_base.safetensors",
-                        ["clip_name2"] = "clip_l_sdxl_base.safetensors",
-                        ["clip_name3"] = "t5xxl_enconly.safetensors"
+                        loaderType = "TripleCLIPLoaderGGUF";
+                    }
+                    string tripleClipLoader = CreateNode(loaderType, new JObject()
+                    {
+                        ["clip_name1"] = getClipGModel(),
+                        ["clip_name2"] = getClipLModel(),
+                        ["clip_name3"] = getT5XXLModel()
                     });
                     LoadingClip = [tripleClipLoader, 0];
                 }
             }
         }
+        else if (IsFlux() && (LoadingClip is null || LoadingVAE is null))
+        {
+            string loaderType = "DualCLIPLoader";
+            if (getT5XXLModel().EndsWith(".gguf"))
+            {
+                loaderType = "DualCLIPLoaderGGUF";
+            }
+            string dualClipLoader = CreateNode(loaderType, new JObject()
+            {
+                ["clip_name1"] = getT5XXLModel(),
+                ["clip_name2"] = getClipLModel(),
+                ["type"] = "flux"
+            });
+            LoadingClip = [dualClipLoader, 0];
+            string fluxVae = UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultFluxVAE;
+            if (string.IsNullOrWhiteSpace(fluxVae) || fluxVae == "None")
+            {
+                fluxVae = Program.T2IModelSets["VAE"].Models.Values.FirstOrDefault(m => m.ModelClass?.CompatClass == "flux-1")?.Name;
+            }
+            if (string.IsNullOrWhiteSpace(fluxVae))
+            {
+                throw new SwarmUserErrorException("No default Flux VAE found, please download a Flux VAE and set it as default in User Settings");
+            }
+            string vaeLoader = CreateNode("VAELoader", new JObject()
+            {
+                ["vae_name"] = fluxVae
+            });
+            LoadingVAE = [vaeLoader, 0];
+        }
         else if (CurrentCompatClass() == "auraflow-v1")
         {
-            string sd3Node = CreateNode("ModelSamplingAuraFlow", new JObject()
+            string auraNode = CreateNode("ModelSamplingAuraFlow", new JObject()
             {
                 ["model"] = LoadingModel,
                 ["shift"] = UserInput.Get(T2IParamTypes.SigmaShift, 1.73)
             });
+            LoadingModel = [auraNode, 0];
         }
         else if (!string.IsNullOrWhiteSpace(predType))
         {
@@ -605,9 +721,25 @@ public class WorkflowGenerator
             });
             LoadingModel = [discreteNode, 0];
         }
+        if (IsFlux() && UserInput.TryGet(T2IParamTypes.SigmaShift, out double shiftVal))
+        {
+            string fluxNode = CreateNode("ModelSamplingFlux", new JObject()
+            {
+                ["model"] = LoadingModel,
+                ["width"] = UserInput.GetImageWidth(),
+                ["height"] = UserInput.GetImageHeight(),
+                ["max_shift"] = shiftVal,
+                ["base_shift"] = 0.5 // TODO: Does this need an input?
+            });
+            LoadingModel = [fluxNode, 0];
+        }
         foreach (WorkflowGenStep step in ModelGenSteps)
         {
             step.Action(this);
+        }
+        if (LoadingClip is null)
+        {
+            throw new SwarmUserErrorException($"Model loader for {model.Name} didn't work - are you sure it has an architecture ID set properly?");
         }
         return (model, LoadingModel, LoadingClip, LoadingVAE);
     }
@@ -650,6 +782,10 @@ public class WorkflowGenerator
             (_, cascadeModel, _, FinalVae) = CreateStandardModelLoader(bModel, LoadingModelType, null, true);
             willCascadeFix = true;
             defsampler ??= "euler_ancestral";
+            defscheduler ??= "simple";
+        }
+        if (IsFlux())
+        {
             defscheduler ??= "simple";
         }
         if (FinalLoadedModel?.ModelClass ?.ID == "stable-diffusion-xl-v1-edit")
@@ -767,6 +903,10 @@ public class WorkflowGenerator
             ["return_with_leftover_noise"] = returnWithLeftoverNoise ? "enable" : "disable",
             ["add_noise"] = addNoise ? "enable" : "disable"
         };
+        if (UserInput.RawOriginalSeed.HasValue && UserInput.RawOriginalSeed >= 0)
+        {
+            inputs["control_after_generate"] = "fixed";
+        }
         string created;
         if (Features.Contains("variation_seed") && !RestrictCustomNodes)
         {
@@ -841,7 +981,7 @@ public class WorkflowGenerator
                 ["width"] = width
             }, id);
         }
-        else if (IsSD3())
+        else if (IsSD3() || IsFlux())
         {
             return CreateNode("EmptySD3LatentImage", new JObject()
             {
@@ -906,15 +1046,110 @@ public class WorkflowGenerator
         FinalModel = [diffNode, 0];
     }
 
+    /// <summary>Create nodes from a special prebuilt node structure data definition.</summary>
+    public JArray CreateNodesFromSpecialSyntax(JObject data, JArray[] inputs)
+    {
+        if (!data.TryGetValue("nodes", out JToken nodesToken) || nodesToken is not JArray nodesArr)
+        {
+            throw new InvalidDataException("Special node generator requires a 'nodes' array.");
+        }
+        if (!data.TryGetValue("output", out JToken outputTok) || outputTok.Type != JTokenType.String)
+        {
+            throw new InvalidDataException("Special node generator requires an 'output' string.");
+        }
+        List<string> nodeIds = [];
+        JArray dataToNodePath(string data)
+        {
+            if (!data.StartsWith("SWARM:"))
+            {
+                return null;
+            }
+            data = data.After(':');
+            if (data.StartsWith("NODE_"))
+            {
+                string node = data.After('_');
+                int subId = 0;
+                if (node.Contains(','))
+                {
+                    (node, string subval) = node.BeforeAndAfter(',');
+                    subId = int.Parse(subval);
+                }
+                int nodeId = int.Parse(node);
+                if (nodeId < 0 || nodeId >= nodeIds.Count)
+                {
+                    throw new InvalidDataException($"Invalid node index in special node generator: requested id {nodeId} but have {nodeIds.Count} nodes.");
+                }
+                return [nodeIds[nodeId], subId];
+            }
+            else if (data.StartsWith("INPUT_"))
+            {
+                string input = data.After('_');
+                int inputId = int.Parse(input);
+                if (inputId < 0 || inputId >= inputs.Length)
+                {
+                    throw new InvalidDataException($"Invalid input index in special node generator: requested id {inputId} but have {inputs.Length} inputs.");
+                }
+                return inputs[inputId];
+            }
+            else
+            {
+                throw new InvalidDataException($"Invalid special node generator syntax: {data}");
+            }
+        }
+        foreach (JToken node in nodesArr)
+        {
+            if (node is not JObject nodeObj || !nodeObj.TryGetValue("class_type", out JToken classTok) || !nodeObj.TryGetValue("inputs", out JToken inputsTok) || inputsTok is not JObject inputsArr)
+            {
+                throw new InvalidDataException("Special node generator requires each node to be an object with an 'class_type' field and 'inputs' obj.");
+            }
+            JObject actualInputs = [];
+            foreach (KeyValuePair<string, JToken> input in inputsArr)
+            {
+                if (input.Value.Type == JTokenType.String && $"{input.Value}".StartsWith("SWARM:"))
+                {
+                    actualInputs[input.Key] = dataToNodePath($"{input.Value}");
+                }
+                else
+                {
+                    actualInputs[input.Key] = input.Value;
+                }
+            }
+            if (nodeObj.TryGetValue("node_data", out JToken nodeData))
+            {
+                foreach ((string key, JToken paramData) in (JObject)nodeData["input"]["required"])
+                {
+                    if (!actualInputs.ContainsKey(key) && paramData.Count() == 2 && paramData[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
+                    {
+                        actualInputs[key] = defaultValue;
+                    }
+                }
+                if (((JObject)nodeData["input"]).TryGetValue("optional", out JToken optional))
+                {
+                    foreach ((string key, JToken paramData) in (JObject)optional)
+                    {
+                        if (!actualInputs.ContainsKey(key) && paramData.Count() == 2 && paramData[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
+                        {
+                            actualInputs[key] = defaultValue;
+                        }
+                    }
+                }
+            }
+            string createdId = CreateNode($"{classTok}", actualInputs);
+            nodeIds.Add(createdId);
+        }
+        return dataToNodePath($"{outputTok}");
+    }
+
     /// <summary>Creates a "CLIPTextEncode" or equivalent node for the given input.</summary>
     public JArray CreateConditioningDirect(string prompt, JArray clip, T2IModel model, bool isPositive, string id = null)
     {
         string node;
         double mult = isPositive ? 1.5 : 0.8;
-        int width = UserInput.Get(T2IParamTypes.Width, 1024);
+        int width = UserInput.GetImageWidth();
         int height = UserInput.GetImageHeight();
         bool enhance = UserInput.Get(T2IParamTypes.ModelSpecificEnhancements, true);
-        if (Features.Contains("variation_seed") && prompt.Contains('[') && prompt.Contains(']'))
+        bool needsAdvancedEncode = (prompt.Contains('[') && prompt.Contains(']')) || prompt.Contains("<break>");
+        if (Features.Contains("variation_seed") && needsAdvancedEncode || (UserInput.TryGet(T2IParamTypes.FluxGuidanceScale, out _) && IsFlux()))
         {
             node = CreateNode("SwarmClipTextEncodeAdvanced", new JObject()
             {
@@ -924,7 +1159,8 @@ public class WorkflowGenerator
                 ["width"] = enhance ? (int)Utilities.RoundToPrecision(width * mult, 64) : width,
                 ["height"] = enhance ? (int)Utilities.RoundToPrecision(height * mult, 64) : height,
                 ["target_width"] = width,
-                ["target_height"] = height
+                ["target_height"] = height,
+                ["guidance"] = UserInput.Get(T2IParamTypes.FluxGuidanceScale, -1)
             }, id);
         }
         else if (model is not null && model.ModelClass is not null && model.ModelClass.ID == "stable-diffusion-xl-v1-base")
@@ -956,6 +1192,11 @@ public class WorkflowGenerator
     /// <summary>Creates a "CLIPTextEncode" or equivalent node for the given input, with support for '&lt;break&gt;' syntax.</summary>
     public JArray CreateConditioningLine(string prompt, JArray clip, T2IModel model, bool isPositive, string id = null)
     {
+        if (Features.Contains("variation_seed"))
+        {
+            return CreateConditioningDirect(prompt, clip, model, isPositive, id);
+        }
+        // Backup to at least process "<break>" for if Swarm nodes are missing
         string[] breaks = prompt.Split("<break>", StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (breaks.Length <= 1)
         {
@@ -1005,7 +1246,7 @@ public class WorkflowGenerator
                     ["gligen_name"] = gligenModel
                 });
             });
-            int width = UserInput.Get(T2IParamTypes.Width, 1024);
+            int width = UserInput.GetImageWidth();
             int height = UserInput.GetImageHeight();
             JArray lastCond = globalCond;
             foreach (PromptRegion.Part part in parts)

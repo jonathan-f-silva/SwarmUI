@@ -37,12 +37,14 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
     public async Task LoadValueSet(double maxMinutes = 1)
     {
         Logs.Verbose($"Comfy backend {BackendData.ID} loading value set...");
-        JObject result = await SendGet<JObject>("object_info", Utilities.TimedCancel(TimeSpan.FromMinutes(maxMinutes)));
+        using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(maxMinutes));
+        JObject result = await SendGet<JObject>("object_info", cancel.Token);
         if (result.TryGetValue("error", out JToken errorToken))
         {
             Logs.Verbose($"Comfy backend {BackendData.ID} failed to load value set: {errorToken}");
             throw new Exception($"Remote error: {errorToken}");
         }
+        AddLoadStatus("Got valid value set, will parse...");
         Logs.Verbose($"Comfy backend {BackendData.ID} loaded value set, parsing...");
         RawObjectInfo = result;
         ConcurrentDictionary<string, List<string>> newModels = [];
@@ -61,6 +63,8 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             }
         }
         trackModels("Stable-Diffusion", "CheckpointLoaderSimple", "ckpt_name");
+        trackModels("Stable-Diffusion", "UNETLoader", "unet_name");
+        trackModels("Stable-Diffusion", "UnetLoaderGGUF", "unet_name");
         trackModels("Stable-Diffusion", "TensorRTLoader", "unet_name");
         trackModels("LoRA", "LoraLoader", "lora_name");
         trackModels("VAE", "VAELoader", "vae_name");
@@ -87,6 +91,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             Logs.Error($"Comfy backend {BackendData.ID} failed to load raw node backend info: {ex}");
         }
         Logs.Verbose($"Comfy backend {BackendData.ID} loaded value set and parsed.");
+        AddLoadStatus("Done parsing value set.");
     }
 
     public abstract bool CanIdle { get; }
@@ -106,8 +111,10 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         Status = BackendStatus.LOADING;
         try
         {
+            AddLoadStatus("Will attempt to load value set...");
             await LoadValueSet();
             Status = BackendStatus.RUNNING;
+            LoadStatusReport = null;
         }
         catch (Exception e)
         {
@@ -118,10 +125,12 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             Logs.Verbose($"Comfy backend {BackendData.ID} failed to load value set, but ignoring error: {e.GetType().Name}: {e.Message}");
         }
         Idler.Stop();
+        Program.GlobalProgramCancel.ThrowIfCancellationRequested();
         if (CanIdle)
         {
             Idler.Backend = this;
-            Idler.ValidateCall = () => SendGet<JObject>("object_info", Utilities.TimedCancel(TimeSpan.FromMinutes(1))).Wait();
+            using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromMinutes(1));
+            Idler.ValidateCall = () => SendGet<JObject>("object_info", cancel.Token).Wait();
             Idler.Start();
         }
     }
@@ -136,7 +145,8 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             {
                 if (socket.Socket.State == WebSocketState.Open)
                 {
-                    await socket.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", Utilities.TimedCancel(TimeSpan.FromSeconds(5)));
+                    using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromSeconds(5));
+                    await socket.Socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", cancel.Token);
                 }
                 socket.Socket.Dispose();
             }
@@ -231,7 +241,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             if (promptResult.ContainsKey("error"))
             {
                 Logs.Debug($"Error came from prompt: {JObject.Parse(workflow).ToDenseDebugString(noSpacing: true)}");
-                throw new InvalidDataException($"ComfyUI errored: {promptResult}");
+                throw new SwarmReadableErrorException($"ComfyUI errored: {promptResult}");
             }
             string promptId = $"{promptResult["prompt_id"]}";
             long firstStep = 0;
@@ -448,7 +458,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             {
                 if (msg[0].ToString() == "execution_error" && (msg[1] as JObject).TryGetValue("exception_message", out JToken actualMessage))
                 {
-                    throw new InvalidOperationException($"ComfyUI execution error: {actualMessage}");
+                    throw new SwarmReadableErrorException($"ComfyUI execution error: {actualMessage}");
                 }
             }
         }
@@ -553,7 +563,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 JObject flowObj = ComfyUIWebAPI.ReadCustomWorkflow(customWorkflowName);
                 if (flowObj.ContainsKey("error"))
                 {
-                    throw new InvalidDataException("Unrecognized ComfyUI Custom Workflow name.");
+                    throw new SwarmUserErrorException("Unrecognized ComfyUI Custom Workflow name.");
                 }
                 workflow = flowObj["prompt"].ToString();
             }
@@ -577,7 +587,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     {
                         if (string.IsNullOrWhiteSpace(defVal))
                         {
-                            throw new InvalidDataException($"Unknown param type request '{tagBasic}' from '{tag}'");
+                            throw new SwarmUserErrorException($"Unknown param type request '{tagBasic}' from '{tag}'");
                         }
                         return defVal;
                     }
@@ -601,6 +611,10 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     {
                         return list.JoinString(",");
                     }
+                    else if (val is bool bval)
+                    {
+                        return bval ? "true" : "false";
+                    }
                     return val.ToString();
                 }
                 long fixSeed(long input)
@@ -610,21 +624,21 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                 string getLoras()
                 {
                     string[] loraNames = [.. Program.T2IModelSets["LoRA"].ListModelNamesFor(user_input.SourceSession)];
-                    string[] matches = [.. user_input.Get(T2IParamTypes.Loras).Select(lora => T2IParamTypes.GetBestModelInList(lora, loraNames))];
+                    string[] matches = [.. user_input.Get(T2IParamTypes.Loras, []).Select(lora => T2IParamTypes.GetBestModelInList(lora, loraNames))];
                     if (matches.Any(m => string.IsNullOrWhiteSpace(m)))
                     {
-                        throw new InvalidDataException("One or more LoRA models not found.");
+                        throw new SwarmUserErrorException("One or more LoRA models not found.");
                     }
                     return matches.JoinString(",");
                 }
                 string filled = tagBasic switch
                 {
-                    "stability_api_key" => user_input.SourceSession.User.GetGenericData("stability_api", "key") ?? throw new InvalidDataException("Stability API key not set - please go to the User tab to set it."),
+                    "stability_api_key" => user_input.SourceSession.User.GetGenericData("stability_api", "key") ?? throw new SwarmUserErrorException("Stability API key not set - please go to the User tab to set it."),
                     "prompt" => user_input.Get(T2IParamTypes.Prompt),
                     "negative_prompt" => user_input.Get(T2IParamTypes.NegativePrompt),
                     "seed" => $"{fixSeed(user_input.Get(T2IParamTypes.Seed)) + (int.TryParse(tagExtra, out int add) ? add : 0)}",
                     "steps" => $"{user_input.Get(T2IParamTypes.Steps)}",
-                    "width" => $"{user_input.Get(T2IParamTypes.Width)}",
+                    "width" => $"{user_input.GetImageWidth()}",
                     "height" => $"{user_input.GetImageHeight()}",
                     "cfg_scale" => $"{user_input.Get(T2IParamTypes.CFGScale)}",
                     "subseed" => $"{user_input.Get(T2IParamTypes.VariationSeed)}",
@@ -671,7 +685,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         {
             void TryApply(string key, Image img, bool resize)
             {
-                Image fixedImage = resize ? img.Resize(user_input.Get(T2IParamTypes.Width), user_input.GetImageHeight()) : img;
+                Image fixedImage = resize ? img.Resize(user_input.GetImageWidth(), user_input.GetImageHeight()) : img;
                 if (key.Contains("swarmloadimageb") || key.Contains("swarminputimage"))
                 {
                     user_input.ValuesInput[key] = fixedImage;
@@ -706,7 +720,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     index = workflow.IndexOf("${" + key);
                 }
             }
-            foreach ((string key, object val) in user_input.ValuesInput)
+            foreach ((string key, object val) in new Dictionary<string, object>(user_input.ValuesInput))
             {
                 bool resize = !T2IParamTypes.TryGetType(key, out T2IParamType type, user_input) || type.ImageShouldResize;
                 if (val is Image img && !type.ImageAlwaysB64)
@@ -763,7 +777,15 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
     {
         T2IParamInput input = new(null);
         input.Set(T2IParamTypes.Model, model);
-        input.Set(T2IParamTypes.Steps, 0);
+        if (ComfyUIBackendExtension.FeaturesSupported.Contains("comfy_just_load_model"))
+        {
+            input.Set(T2IParamTypes.Steps, 0);
+            input.Set(T2IParamTypes.DoNotSave, true);
+        }
+        else
+        {
+            input.Set(T2IParamTypes.Steps, 1);
+        }
         input.Set(T2IParamTypes.Width, 256);
         input.Set(T2IParamTypes.Height, 256);
         input.Set(T2IParamTypes.Prompt, "(load the model please)");

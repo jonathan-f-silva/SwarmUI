@@ -47,7 +47,7 @@ public class ImageBatchToolExtension : Extension
             await socket.SendJson(new JObject() { ["error"] = "Input and output folder cannot be the same" }, API.WebsocketTimeout);
             return null;
         }
-        string[] imageFiles = Directory.EnumerateFiles(input_folder).Where(f => f.EndsWith(".png") || f.EndsWith(".jpg") || f.EndsWith(".jpeg")).ToArray();
+        string[] imageFiles = Directory.EnumerateFiles(input_folder).Where(f => f.EndsWith(".png") || f.EndsWith(".jpg") || f.EndsWith(".jpeg") || f.EndsWith(".webp")).ToArray();
         if (imageFiles.Length == 0)
         {
             await socket.SendJson(new JObject() { ["error"] = "Input folder does not contain any images" }, API.WebsocketTimeout);
@@ -74,18 +74,20 @@ public class ImageBatchToolExtension : Extension
             output(BasicAPIFeatures.GetCurrentStatusRaw(session));
         }
         await sendStatus();
+        string finalError = null;
+        long failureCount = 0;
         void setError(string message)
         {
-            Logs.Debug($"Refused to run image-batch-gen for {session.User.UserID}: {message}");
-            output(new JObject() { ["error"] = message });
-            claim.LocalClaimInterrupt.Cancel();
+            Volatile.Write(ref finalError, message);
+            Interlocked.Increment(ref failureCount);
+            Logs.Warning($"Failed while running image-batch-gen for {session.User.UserID}: {message}");
         }
         T2IParamInput baseParams;
         try
         {
             baseParams = T2IAPI.RequestToParams(session, rawInput["baseParams"] as JObject);
         }
-        catch (InvalidDataException ex)
+        catch (SwarmReadableErrorException ex)
         {
             output(new JObject() { ["error"] = ex.Message });
             return;
@@ -154,7 +156,7 @@ public class ImageBatchToolExtension : Extension
                     }
                     break;
                 default:
-                    throw new InvalidDataException("Invalid resolution mode");
+                    throw new SwarmUserErrorException("Invalid resolution mode");
             }
             if (init_image)
             {
@@ -203,5 +205,12 @@ public class ImageBatchToolExtension : Extension
         }
         claim.Dispose();
         await sendStatus();
+        finalError = Volatile.Read(ref finalError);
+        if (finalError is not null)
+        {
+            Logs.Error($"Image edit batch had {failureCount} errors while running.");
+            output(new JObject() { ["error"] = $"{failureCount} images in the batch failed, including: {finalError}" });
+            return;
+        }
     }
 }

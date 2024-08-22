@@ -11,11 +11,18 @@ namespace SwarmUI.Text2Image;
 /// <summary>Represents user-input for a Text2Image request.</summary>
 public class T2IParamInput
 {
+    /// <summary>Parameter IDs that must be loaded early on, eg extracted from presets in prompts early. Primarily things that affect backend selection.</summary>
+    public static readonly string[] ParamsMustLoadEarly = ["model", "images", "internalbackendtype", "exactbackendid"];
+
     /// <summary>Special handlers for any special logic to apply post-loading a param input.</summary>
     public static List<Action<T2IParamInput>> SpecialParameterHandlers =
     [
         input =>
         {
+            if (!input.RawOriginalSeed.HasValue)
+            {
+                input.RawOriginalSeed = input.Get(T2IParamTypes.Seed, -1);
+            }
             if (!input.TryGet(T2IParamTypes.Seed, out long seed) || seed == -1)
             {
                 input.Set(T2IParamTypes.Seed, Random.Shared.Next());
@@ -55,6 +62,34 @@ public class T2IParamInput
                     }
                     input.Set(T2IParamTypes.LoraWeights, weights);
                 }
+            }
+        },
+        input =>
+        {
+            // Special patch: if model is in a preset in the prompt, we want to apply that as early as possible to ensure the model router knows how to route correctly.
+            if (input.TryGet(T2IParamTypes.Prompt, out string prompt) && prompt.Contains("<preset:"))
+            {
+                StringConversionHelper.QuickSimpleTagFiller(prompt, "<", ">", tag =>
+                {
+                    (string prefix, string data) = tag.BeforeAndAfter(':');
+                    if (prefix == "preset")
+                    {
+                        T2IPreset preset = input.SourceSession.User.GetPreset(data);
+                        if (preset is null)
+                        {
+                            Logs.Debug($"(Pre-input-parse) Preset '{data}' does not exist and will be ignored.");
+                            return null;
+                        }
+                        foreach (string pname in ParamsMustLoadEarly)
+                        {
+                            if (preset.ParamMap.TryGetValue(pname, out string pval))
+                            {
+                                T2IParamTypes.ApplyParameter(pname, pval, input);
+                            }
+                        }
+                    }
+                    return "";
+                });
             }
         }
     ];
@@ -450,6 +485,9 @@ public class T2IParamInput
     /// <summary>List of reasons this input did not match backend requests, if any.</summary>
     public HashSet<string> RefusalReasons = [];
 
+    /// <summary>Original seed the input had, before randomization handling.</summary>
+    public long? RawOriginalSeed;
+
     /// <summary>Construct a new parameter input handler for a session.</summary>
     public T2IParamInput(Session session)
     {
@@ -459,15 +497,24 @@ public class T2IParamInput
         ExtraMeta["date"] = DateTime.Now.ToString("yyyy-MM-dd");
     }
 
-    /// <summary>Gets the desired image width, automatically using alt-res parameter if needed.</summary>
+    /// <summary>Gets the desired image width.</summary>
+    public int GetImageWidth()
+    {
+        if (TryGet(T2IParamTypes.RawResolution, out string res))
+        {
+            return int.Parse(res.Before('x'));
+        }
+        return Get(T2IParamTypes.Width, 512);
+    }
+
+    /// <summary>Gets the desired image height, automatically using alt-res parameter if needed.</summary>
     public int GetImageHeight()
     {
         if (TryGet(T2IParamTypes.RawResolution, out string res))
         {
             return int.Parse(res.After('x'));
         }
-        if (TryGet(T2IParamTypes.AltResolutionHeightMult, out double val)
-            && TryGet(T2IParamTypes.Width, out int width))
+        if (TryGet(T2IParamTypes.AltResolutionHeightMult, out double val) && TryGet(T2IParamTypes.Width, out int width))
         {
             return (int)(val * width);
         }
@@ -681,6 +728,7 @@ public class T2IParamInput
                 {
                     (prefix, preData) = prefix.BeforeLast(']').BeforeAndAfter('[');
                 }
+                prefix = prefix.ToLowerFast();
                 context.RawCurrentTag = tag;
                 context.PreData = preData;
                 Logs.Verbose($"[Prompt Parsing] Found tag {val}, will fill... prefix = '{prefix}', data = '{data}', predata = '{preData}'");
@@ -705,6 +753,10 @@ public class T2IParamInput
                         }
                         return result;
                     }
+                }
+                else if (tag.ToLowerFast() == "break")
+                {
+                    return "<break>";
                 }
                 return $"<{tag}>";
             }, false, 0);
@@ -823,8 +875,12 @@ public class T2IParamInput
         T2IModel getModel(string name)
         {
             T2IModelHandler handler = Program.T2IModelSets[param.Subtype ?? "Stable-Diffusion"];
-            string best = T2IParamTypes.GetBestModelInList(name.Replace('\\', '/'), [.. handler.Models.Keys]);
-            return handler.Models.TryGetValue(best ?? name, out T2IModel actualModel) ? actualModel : null;
+            string best = T2IParamTypes.GetBestModelInList(name.Replace('\\', '/'), [.. handler.ListModelNamesFor(SourceSession)]);
+            if (best is null)
+            {
+                return null;
+            }
+            return handler.GetModel(best);
         }
         if (param.IgnoreIf is not null && param.IgnoreIf == val)
         {

@@ -669,6 +669,20 @@ function forceSetDropdownValue(elem, val) {
     }
 }
 
+/** Returns a string representing the given count in a human-readable format. For example "1.2M" */
+function largeCountStringify(size) {
+    if (size > 1000 * 1000 * 1000) {
+        return `${(size / (1000 * 1000 * 1000)).toFixed(1)}B`;
+    }
+    if (size > 1000 * 1000) {
+        return `${(size / (1000 * 1000)).toFixed(1)}M`;
+    }
+    if (size > 1000) {
+        return `${(size / 1000).toFixed(1)}K`;
+    }
+    return `${size}`;
+}
+
 /** Returns a string representing the given file size in a human-readable format. For example "1.23 GiB" */
 function fileSizeStringify(size) {
     if (size > 1024 * 1024 * 1024) {
@@ -791,6 +805,15 @@ function decodeUtf16(data) {
     return output.join('');
 }
 
+/** Takes a UTF-16 Little Endian Uint8Array and returns a string. */
+function decodeUtf16LE(data) {
+    let output = [];
+    for (let i = 0; i < data.length; i += 2) {
+        output.push(String.fromCharCode((data[i] << 8) + data[i + 1]));
+    }
+    return output.join('');
+}
+
 /** Returns whether two arrays are equal. */
 function arraysEqual(arr1, arr2) {
     if (arr1.length != arr2.length) {
@@ -824,4 +847,26 @@ function formatDateTime(date) {
 /** Escapes a string for use in a regex. */
 function regexEscape(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Gets a hex string from a byte array. */
+function toHexString(byteArray) {
+    // Efficient method from https://stackoverflow.com/a/55426656
+    let chars = new Uint8Array(byteArray.length * 2);
+    const alpha = 'a'.charCodeAt(0) - 10;
+    const digit = '0'.charCodeAt(0);
+    let p = 0;
+    for (let i = 0; i < byteArray.length; i++) {
+        let nibble = byteArray[i] >>> 4;
+        chars[p++] = nibble > 9 ? nibble + alpha : nibble + digit;
+        nibble = byteArray[i] & 0xF;
+        chars[p++] = nibble > 9 ? nibble + alpha : nibble + digit;
+    }
+    return String.fromCharCode.apply(null, chars);
+}
+
+/** Gets the section of a string before the last index of a given character. If the character is not present, returns the full string. */
+function strBeforeLast(str, char) {
+    let index = str.lastIndexOf(char);
+    return index < 0 ? str : str.substring(0, index);
 }

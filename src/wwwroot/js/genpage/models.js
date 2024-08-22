@@ -4,11 +4,13 @@ let cur_model = null;
 let curModelWidth = 0, curModelHeight = 0;
 let curModelArch = '';
 let curModelCompatClass = '';
+let curModelSpecialFormat = '';
 let curWildcardMenuWildcard = null;
 let curModelMenuModel = null;
 let curModelMenuBrowser = null;
 let loraWeightPref = {};
 let allWildcards = [];
+let nativelySupportedModelExtensions = ["safetensors", "sft", "engine", "gguf"];
 
 function test_wildcard_again() {
     let card = curWildcardMenuWildcard;
@@ -336,7 +338,10 @@ class ModelBrowserWrapper {
         }
         let prefix = path == '' ? '' : (path.endsWith('/') ? path : `${path}/`);
         genericRequest('ListModels', {'path': path, 'depth': depth, 'subtype': this.subType, 'sortBy': sortBy, 'sortReverse': reverse}, data => {
-            let files = data.files.sort((a,b) => sortModelLocal(a, b, data.files)).map(f => { return { 'name': `${prefix}${f.name}`, 'data': f }; });
+            let files = data.files.sort((a,b) => sortModelLocal(a, b, data.files)).map(f => { return { 'name': f.name, 'data': f }; });
+            for (let file of files) {
+                file.data.display = cleanModelName(file.data.name.substring(prefix.length));
+            }
             if (this.subType == 'VAE') {
                 let autoFile = {
                     'name': `Automatic`,
@@ -386,6 +391,14 @@ class ModelBrowserWrapper {
         if (this.subType == 'Stable-Diffusion' && model.data.local) {
             let buttonLoad = () => {
                 directSetModel(model.data);
+                if (curModelSpecialFormat == 'bnb_nf4' && !currentBackendFeatureSet.includes('bnb_nf4') && !localStorage.getItem('hide_bnb_nf4_check')) {
+                    $('#bnb_nf4_installer').modal('show');
+                    return;
+                }
+                if (curModelSpecialFormat == 'gguf' && !currentBackendFeatureSet.includes('gguf') && !localStorage.getItem('hide_gguf_check')) {
+                    $('#gguf_installer').modal('show');
+                    return;
+                }
                 makeWSRequestT2I('SelectModelWS', {'model': model.data.name}, data => {
                     this.browser.navigate(lastModelDir);
                 });
@@ -415,6 +428,7 @@ class ModelBrowserWrapper {
             ];
         }
         let name = cleanModelName(model.data.name);
+        let display = (model.data.display || name).replaceAll('/', ' / ');
         if (this.subType == 'Wildcards') {
             buttons = [
                 { label: 'Edit Wildcard', onclick: () => editWildcard(model.data) },
@@ -436,7 +450,7 @@ class ModelBrowserWrapper {
             let isSelected = match && match.length > 0;
             let className = isSelected ? 'model-selected' : '';
             let searchable = `${model.data.name}, ${description}`;
-            return { name, description, buttons, className, searchable, 'image': model.data.image };
+            return { name, description, buttons, className, searchable, 'image': model.data.image, display };
         }
         let isCorrect = this.subType == 'Stable-Diffusion' || isModelArchCorrect(model.data);
         let interject = '';
@@ -452,7 +466,7 @@ class ModelBrowserWrapper {
             if (!model.data.local) {
                 interject += `<b>(This model is only available on some backends.)</b><br>`;
             }
-            description = `<span class="model_filename">${escapeHtml(name)}</span><br>${getLine("Title", model.data.title)}${getOptLine("Author", model.data.author)}${getLine("Type", model.data.class)}${interject}${getOptLine('Trigger Phrase', model.data.trigger_phrase)}${getOptLine('Usage Hint', model.data.usage_hint)}${getLine("Description", model.data.description)}`;
+            description = `<span class="model_filename">${escapeHtml(display)}</span><br>${getLine("Title", model.data.title)}${getOptLine("Author", model.data.author)}${getLine("Type", model.data.class)}${interject}${getOptLine('Trigger Phrase', model.data.trigger_phrase)}${getOptLine('Usage Hint', model.data.usage_hint)}${getLine("Description", model.data.description)}`;
             if (model.data.local) {
                 buttons.push({ label: 'Edit Metadata', onclick: () => editModel(model.data, this) });
             }
@@ -461,8 +475,7 @@ class ModelBrowserWrapper {
             }
         }
         else {
-            let ext = model.data.name.substring(model.data.name.lastIndexOf('.') + 1);
-            description = `${escapeHtml(name)}.${ext}<br>(Metadata only available for 'safetensors' models.)<br><b>WARNING:</b> 'ckpt' pickle files can contain malicious code! Use with caution.<br>`;
+            description = `${escapeHtml(name)}<br>(Metadata only available for 'safetensors' models.)<br><b>WARNING:</b> 'ckpt' pickle files can contain malicious code! Use with caution.<br>`;
         }
         let selector = 'current_model';
         switch (this.subType) {
@@ -498,7 +511,7 @@ class ModelBrowserWrapper {
             className += ' model-remote';
         }
         let searchable = `${model.data.name}, ${description}, ${model.data.license}, ${model.data.architecture||'no-arch'}, ${model.data.usage_hint}, ${model.data.trigger_phrase}, ${model.data.merged_from}, ${model.data.tags}`;
-        return { name, description, buttons, 'image': model.data.preview_image, className, searchable };
+        return { name, description, buttons, 'image': model.data.preview_image, className, searchable, display };
     }
 
     selectModel(model) {
@@ -728,21 +741,23 @@ function directSetModel(model) {
         let clean = cleanModelName(model.name);
         forceSetDropdownValue('input_model', clean);
         forceSetDropdownValue('current_model', clean);
-        setCookie('selected_model', `${clean},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class}`, 90);
+        setCookie('selected_model', `${clean},${model.standard_width},${model.standard_height},${model.architecture},${model.compat_class},${model.special_format}`, 90);
         curModelWidth = model.standard_width;
         curModelHeight = model.standard_height;
         curModelArch = model.architecture;
         curModelCompatClass = model.compat_class;
+        curModelSpecialFormat = model.special_format;
     }
     else if (model.includes(',')) {
-        let [name, width, height, arch, compatClass] = model.split(',');
+        let [name, width, height, arch, compatClass, specialFormat] = model.split(',');
         forceSetDropdownValue('input_model', name);
         forceSetDropdownValue('current_model', name);
-        setCookie('selected_model', `${name},${width},${height},${arch},${compatClass}`, 90);
+        setCookie('selected_model', `${name},${width},${height},${arch},${compatClass},${specialFormat}`, 90);
         curModelWidth = parseInt(width);
         curModelHeight = parseInt(height);
         curModelArch = arch;
         curModelCompatClass = compatClass;
+        curModelSpecialFormat = specialFormat;
     }
     reviseBackendFeatureSet();
     getRequiredElementById('input_model').dispatchEvent(new Event('change'));

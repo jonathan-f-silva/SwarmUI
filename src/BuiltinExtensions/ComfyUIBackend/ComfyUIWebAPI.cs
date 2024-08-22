@@ -27,8 +27,9 @@ public static class ComfyUIWebAPI
     }
 
     /// <summary>API route to save a comfy workflow object to persistent file.</summary>
-    public static async Task<JObject> ComfySaveWorkflow(string name, string workflow, string prompt, string custom_params, string param_values, string image, string description = "", bool enable_in_simple = false)
+    public static async Task<JObject> ComfySaveWorkflow(string name, string workflow, string prompt, string custom_params, string param_values, string image, string description = "", bool enable_in_simple = false, string replace = null)
     {
+        string origPath = Utilities.StrictFilenameClean(string.IsNullOrWhiteSpace(replace) ? name : replace);
         string cleaned = Utilities.StrictFilenameClean(name);
         string path = $"{ComfyUIBackendExtension.Folder}/CustomWorkflows/{cleaned}.json";
         Directory.CreateDirectory(Directory.GetParent(path).FullName);
@@ -36,14 +37,18 @@ public static class ComfyUIWebAPI
         {
             image = Image.FromDataString(image).ToMetadataFormat();
         }
-        else if (ComfyUIBackendExtension.CustomWorkflows.ContainsKey(path))
+        else if (ComfyUIBackendExtension.CustomWorkflows.ContainsKey(origPath))
         {
-            ComfyUIBackendExtension.ComfyCustomWorkflow oldFlow = ComfyUIBackendExtension.GetWorkflowByName(path);
+            ComfyUIBackendExtension.ComfyCustomWorkflow oldFlow = ComfyUIBackendExtension.GetWorkflowByName(origPath);
             image = oldFlow.Image;
         }
         if (string.IsNullOrWhiteSpace(image))
         {
             image = "/imgs/model_placeholder.jpg";
+        }
+        if (!string.IsNullOrWhiteSpace(replace))
+        {
+            await ComfyDeleteWorkflow(replace);
         }
         ComfyUIBackendExtension.CustomWorkflows[cleaned] = new ComfyUIBackendExtension.ComfyCustomWorkflow(cleaned, workflow, prompt, custom_params, param_values, image, description, enable_in_simple);
         JObject data = new()
@@ -140,11 +145,7 @@ public static class ComfyUIWebAPI
             string flow = ComfyUIAPIAbstractBackend.CreateWorkflow(input, w => w, format, features: backend.SupportedFeatures.ToHashSet());
             return new JObject() { ["workflow"] = flow };
         }
-        catch (InvalidOperationException ex)
-        {
-            return new JObject() { ["error"] = ex.Message };
-        }
-        catch (InvalidDataException ex)
+        catch (SwarmReadableErrorException ex)
         {
             return new JObject() { ["error"] = ex.Message };
         }
@@ -165,14 +166,15 @@ public static class ComfyUIWebAPI
         await MultiInstallLock.WaitAsync(Program.GlobalProgramCancel);
         try
         {
-            if (Program.Backends.RunningBackendsOfType<ComfyUISelfStartBackend>().IsEmpty())
+            ComfyUISelfStartBackend backend = Program.Backends.RunningBackendsOfType<ComfyUISelfStartBackend>().FirstOrDefault();
+            if (backend is null)
             {
                 Logs.Warning($"User {session.User.UserID} tried to install feature '{feature}' but have no comfy self-start backends.");
                 return new JObject() { ["error"] = $"Cannot install Comfy features as this Swarm instance has no running ComfyUI Self-Start backends currently." };
             }
-            static async Task<JObject> doRepo(string path)
+            async Task<JObject> doRepo(string path, bool skipPipCache = false)
             {
-                bool didRestart = await ComfyUISelfStartBackend.EnsureNodeRepo(path);
+                bool didRestart = await backend.EnsureNodeRepo(path, skipPipCache);
                 if (!didRestart)
                 {
                     _ = Utilities.RunCheckedTask(ComfyUIBackendExtension.RestartAllComfyBackends);
@@ -183,7 +185,10 @@ public static class ComfyUIWebAPI
             if (feature == "ipadapter") { return await doRepo("https://github.com/cubiq/ComfyUI_IPAdapter_plus"); }
             else if (feature == "controlnet_preprocessors") { return await doRepo("https://github.com/Fannovel16/comfyui_controlnet_aux"); }
             else if (feature == "frame_interpolation") { return await doRepo("https://github.com/Fannovel16/ComfyUI-Frame-Interpolation"); }
-            else if (feature == "comfyui_tensorrt") { return await doRepo("https://github.com/comfyanonymous/ComfyUI_TensorRT"); }
+            else if (feature == "comfyui_tensorrt") { return await doRepo("https://github.com/comfyanonymous/ComfyUI_TensorRT", skipPipCache: true); }
+            else if (feature == "sam2") { return await doRepo("https://github.com/kijai/ComfyUI-segment-anything-2"); }
+            else if (feature == "bnb_nf4") { return await doRepo("https://github.com/comfyanonymous/ComfyUI_bitsandbytes_NF4"); }
+            else if (feature == "gguf") { return await doRepo("https://github.com/city96/ComfyUI-GGUF"); }
             else
             {
                 Logs.Warning($"User {session.User.UserID} tried to install unknown feature '{feature}'.");
@@ -213,7 +218,9 @@ public static class ComfyUIWebAPI
         ["stable-diffusion-xl-v1-refiner"] = "sdxl_refiner",
         ["stable-video-diffusion-img2vid-v1"] = "svd",
         ["stable-diffusion-v3-medium"] = "sd3",
-        ["auraflow-v1"] = "auraflow"
+        ["auraflow-v1"] = "auraflow",
+        ["Flux.1-schnell"] = "flux",
+        ["Flux.1-dev"] = "flux"
     };
 
     /// <summary>API route to create a TensorRT model.</summary>
@@ -233,7 +240,7 @@ public static class ComfyUIWebAPI
         }
         if (!ArchitecturesTRTCompat.ContainsKey(modelData.ModelClass?.ID))
         {
-            await ws.SendJson(new JObject() { ["error"] = "This model does not have an Architecture ID listed as compatible with TensorRT (v1, v2-768-v, XL-v1-base, XL-v1-refiner, stable-video-diffusion)." }, API.WebsocketTimeout);
+            await ws.SendJson(new JObject() { ["error"] = "This model does not have an Architecture ID listed as compatible with TensorRT (v1, v2-768-v, XL-v1-base, XL-v1-refiner, stable-video-diffusion, SD3, AuraFlow, Flux.1)." }, API.WebsocketTimeout);
             return null;
         }
         if (optBatch < 1 || maxBatch < 1 || optBatch > 64 || maxBatch > 64)

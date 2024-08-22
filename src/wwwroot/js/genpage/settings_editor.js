@@ -50,7 +50,7 @@ function buildSettingsMenu(container, data, prefix, tracker) {
     let confirmer = getRequiredElementById(`${prefix}confirmer`);
     for (let key of keys) {
         let elem = getRequiredElementById(prefix + key);
-        elem.addEventListener('change', () => {
+        elem.addEventListener('input', () => {
             let value = null;
             if (elem.type == 'checkbox') {
                 value = elem.checked;
@@ -121,9 +121,11 @@ function applyThemeSetting(theme_info) {
 
 function loadUserSettings(callback = null) {
     genericRequest('GetUserSettings', {}, data => {
-        data.settings.vaes.value.defaultsdxlvae.values = ['None'].concat(coreModelMap['VAE']);
-        data.settings.vaes.value.defaultsdv1vae.values = ['None'].concat(coreModelMap['VAE']);
-        data.settings.vaes.value.defaultsvdvae.values = ['None'].concat(coreModelMap['VAE']);
+        if (coreModelMap['VAE'] != null) {
+            for (let setting of ['defaultsdxlvae', 'defaultsdv1vae', 'defaultsvdvae', 'defaultfluxvae']) {
+                data.settings.vaes.value[setting].values = ['None'].concat(coreModelMap['VAE']);
+            }
+        }
         buildSettingsMenu(userSettingsContainer, data.settings, 'usersettings_', userSettingsData);
         applyThemeSetting(data.themes);
         // Build a second time to self-apply settings

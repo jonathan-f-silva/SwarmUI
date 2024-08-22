@@ -8,20 +8,24 @@ class SwarmClipTextEncodeAdvanced:
         return {
             "required": {
                 "clip": ("CLIP", ),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
-                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True} ),
-                "width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
-                "height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
-                "target_width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
-                "target_height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000, "tooltip": "How many sampling steps will be ran - this is needed for per-step features (from-to/alternate/...) to work properly."}),
+                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True, "tooltip": "Your actual prompt text."} ),
+                "width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION, "tooltip": "Intended width of the image, used by some models (eg SDXL)."}),
+                "height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION, "tooltip": "Intended height of the image, used by some models (eg SDXL)."}),
+                "target_width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION, "tooltip": "Actual width of the image, used by some models (eg SDXL)."}),
+                "target_height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION, "tooltip": "Actual height of the image, used by some models (eg SDXL)."}),
+            },
+            "optional": {
+                "guidance": ("FLOAT", {"default": -1, "min": -1, "max": 100.0, "step": 0.1, "tooltip": "Guidance value to embed, used by some models (eg Flux)."}),
             }
         }
 
     CATEGORY = "SwarmUI/clip"
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "encode"
+    DESCRIPTION = "Acts like the regular CLIPTextEncode, but supports more advanced special features like '<break>', '[from:to:when]', '[alter|nate]', ..."
 
-    def encode(self, clip, steps: int, prompt: str, width: int, height: int, target_width: int, target_height: int):
+    def encode(self, clip, steps: int, prompt: str, width: int, height: int, target_width: int, target_height: int, guidance: float = -1):
 
         encoding_cache = {}
 
@@ -30,10 +34,19 @@ class SwarmClipTextEncodeAdvanced:
             if text in encoding_cache:
                 cond, pooled = encoding_cache[text]
             else:
-                tokens = clip.tokenize(text)
+                cond_chunks = text.split("<break>")
+                tokens = clip.tokenize(cond_chunks[0])
                 cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
+                if len(cond_chunks) > 1:
+                    for chunk in cond_chunks[1:]:
+                        tokens = clip.tokenize(chunk)
+                        cond_chunk, pooled_chunk = clip.encode_from_tokens(tokens, return_pooled=True)
+                        cond = torch.cat([cond, cond_chunk], dim=1)
                 encoding_cache[text] = (cond, pooled)
-            return [cond, {"pooled_output": pooled, "width": width, "height": height, "crop_w": 0, "crop_h": 0, "target_width": target_width, "target_height": target_height, "start_percent": start_percent, "end_percent": end_percent}]
+            result = {"pooled_output": pooled, "width": width, "height": height, "crop_w": 0, "crop_h": 0, "target_width": target_width, "target_height": target_height, "start_percent": start_percent, "end_percent": end_percent}
+            if guidance >= 0:
+                result["guidance"] = guidance
+            return [cond, result]
 
         prompt = prompt.replace("\\[", "\0\1").replace("\\]", "\0\2")
 
@@ -75,8 +88,6 @@ class SwarmClipTextEncodeAdvanced:
                 any = True
             chunks.append({'text': control, 'data': data, 'type': ctrltype})
             remaining = remaining[end + 1:]
-
-        print(chunks)
 
         if not any:
             return ([text_to_cond(prompt, 0, 1)], )

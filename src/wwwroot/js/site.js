@@ -265,7 +265,7 @@ function textPromptDoCount(elem, countElem = null, prefix = '') {
 
 function textPromptInputHandle(elem) {
     elem.style.height = '0px';
-    elem.style.height = `max(3.4rem, ${elem.scrollHeight + 5}px)`;
+    elem.style.height = `max(3.4rem, min(15rem, ${elem.scrollHeight + 5}px))`;
     textPromptDoCount(elem);
 }
 
@@ -289,8 +289,8 @@ function textPromptAddKeydownHandler(elem) {
             before += mid.substring(0, 1);
             mid = mid.substring(1);
         }
-        // Sorry for the regex. Matches ends with ":1.5)" or just ")". Or Just ":1.5". Also empty, so that needs a check after.
-        let matched = mid.trim().match(/(?:\:[0-9.-]*)?\)?$/);
+        // Sorry for the regex. Matches ends with ":1.5)" or just ")". Or Just ":1.5". Also forbids backslash prefix. Also empty, so that needs a check after.
+        let matched = mid.trim().match(/(?<![\\])(?:\:[0-9.-]*)?\)?$/);
         if (matched && matched[0]) {
             after = mid.substring(mid.length - matched[0].length) + after;
             mid = mid.substring(0, mid.length - matched[0].length);
@@ -298,6 +298,9 @@ function textPromptAddKeydownHandler(elem) {
         if (before.trimEnd().endsWith("(") && after.trimStart().startsWith(":")) {
             let postColon = after.trimStart().substring(1);
             let paren = postColon.indexOf(')');
+            while (paren > 0 && postColon.substring(paren - 1).startsWith('\\)')) {
+                paren = postColon.indexOf(')', paren + 1);
+            }
             if (paren != -1) {
                 before = before.trimEnd();
                 before = before.substring(0, before.length - 1);
@@ -431,8 +434,11 @@ function load_image_file(e) {
 }
 
 function autoSelectWidth(elem) {
+    if (elem.classList.contains('nogrow')) {
+        return;
+    }
     let span = document.createElement('span');
-    span.innerText = elem.value;
+    span.innerText = elem.selectedOptions[0] ? elem.selectedOptions[0].innerText : elem.value;
     document.body.appendChild(span);
     let width = Math.max(50, span.offsetWidth + 30);
     elem.style.width = `${width}px`;
@@ -440,6 +446,9 @@ function autoSelectWidth(elem) {
 }
 
 function autoNumberWidth(elem) {
+    if (elem.classList.contains('nogrow')) {
+        return;
+    }
     let span = document.createElement('span');
     span.innerText = elem.value;
     document.body.appendChild(span);
@@ -599,6 +608,21 @@ function makeCheckboxInput(featureid, id, paramid, name, description, value, tog
     </div>`;
 }
 
+function htmlWithParen(text) {
+    let start = text.indexOf("(");
+    if (start == -1) {
+        return escapeHtml(text);
+    }
+    let end = text.indexOf(")", start);
+    if (end == -1) {
+        return escapeHtml(text);
+    }
+    let prefix = text.substring(0, start);
+    let mid = text.substring(start, end + 1);
+    let suffix = text.substring(end + 1);
+    return `${htmlWithParen(prefix)}<span class='parens'>${escapeHtml(mid)}</span>${htmlWithParen(suffix)}`;
+}
+
 function makeDropdownInput(featureid, id, paramid, name, description, values, defaultVal, toggles = false, popover_button = true, alt_names = null) {
     name = escapeHtml(name);
     featureid = featureid ? ` data-feature-require="${featureid}"` : '';
@@ -609,12 +633,13 @@ function makeDropdownInput(featureid, id, paramid, name, description, values, de
         <label>
             <span class="auto-input-name">${getToggleHtml(toggles, id, name)}${translateableHtml(name)}${popover}</span>
         </label>
-        <select class="auto-dropdown" id="${id}" data-param_id="${paramid}" autocomplete="false" onchange="autoSelectWidth(this)">`;
+        <select class="auto-dropdown" id="${id}" data-name="${name}" data-param_id="${paramid}" autocomplete="false" onchange="autoSelectWidth(this)">`;
     for (let i = 0; i < values.length; i++) {
         let value = values[i];
         let alt_name = alt_names && alt_names[i] ? alt_names[i] : value;
         let selected = value == defaultVal ? ' selected="true"' : '';
-        html += `<option value="${escapeHtmlNoBr(value)}"${selected}>${escapeHtml(alt_name)}</option>`;
+        let cleanName = htmlWithParen(alt_name);
+        html += `<option data-cleanname="${cleanName}" value="${escapeHtmlNoBr(value)}"${selected}>${cleanName}</option>\n`;
     }
     html += `
         </select>
@@ -643,6 +668,15 @@ function makeMultiselectInput(featureid, id, paramid, name, description, values,
     return html;
 }
 
+function onImageInputPaste(e) {
+    let element = findParentOfClass(e.target, 'auto-input').querySelector('input[type="file"]');
+    let files = e.clipboardData.files;
+    if (files.length > 0 && files[0].type.startsWith('image/')) {
+        element.files = files;
+        triggerChangeFor(element);
+    }
+}
+
 function makeImageInput(featureid, id, paramid, name, description, toggles = false, popover_button = true) {
     name = escapeHtml(name);
     featureid = featureid ? ` data-feature-require="${featureid}"` : '';
@@ -652,6 +686,7 @@ function makeImageInput(featureid, id, paramid, name, description, toggles = fal
     <div class="auto-input auto-file-box"${featureid}>
         <label>
             <span class="auto-input-name">${getToggleHtml(toggles, id, name)}${translateableHtml(name)}${popover}</span>
+            <input type="text" id="${id}_pastebox" size="14" maxlength="0" placeholder="Ctrl+V: Paste Image" onpaste="onImageInputPaste(arguments[0])">
         </label>
         <label for="${id}" class="auto-file-label">
             <input class="auto-file" type="file" accept="image/png, image/jpeg" id="${id}" data-param_id="${paramid}" onchange="load_image_file(this)" ondragover="updateFileDragging(arguments[0], false)" ondragleave="updateFileDragging(arguments[0], true)" autocomplete="false">
@@ -665,12 +700,40 @@ function makeImageInput(featureid, id, paramid, name, description, toggles = fal
     return html;
 }
 
-// This is a giant hackpile to force dragging images onto inputs to treat them like files and thus actually work
-window.addEventListener('drop', e => {
-    if (e.dataTransfer && e.dataTransfer.files.length) {
+let chromeIsDumbFileName = null, chromeIsDumbFileUris = null;
+
+/**
+ * This is a deeply cursed bonus hack to fix like two separate bonus problems specific to Chromium just being bad.
+ * It can't modify dataTransfer inside the drag start event (why??? they mention security in re drag*over* which makes sense, but why start?!),
+ * and also it mixes up the file extension at random for unclear reasons. Also the lastModified time is just the current time instead of a reliable time.
+ * Overall 0/10, chromium is trash, never use it.
+ */
+function chromeIsDumbFileHack(file, uris) {
+    if (!file) {
         return;
     }
-    let uris = e.dataTransfer.getData('text/uri-list');
+    chromeIsDumbFileName = strBeforeLast(file.name, '.');
+    chromeIsDumbFileUris = uris;
+}
+
+// This is a giant hackpile to force dragging images onto inputs to treat them like files and thus actually work
+// ft. bonus chrome nonsense hackfix, see above
+window.addEventListener('drop', e => {
+    let uris;
+    if (e.dataTransfer && e.dataTransfer.files.length) {
+        let fname = strBeforeLast(e.dataTransfer.files[0].name, '.');
+        if (fname == chromeIsDumbFileName) {
+            uris = chromeIsDumbFileUris;
+        }
+        else {
+            chromeIsDumbFileName = null;
+            return;
+        }
+    }
+    else {
+        uris = e.dataTransfer.getData('text/uri-list');
+    }
+    chromeIsDumbFileName = null;
     if (!uris) {
         return;
     }
@@ -701,7 +764,7 @@ window.addEventListener('drop', e => {
     xhr.open('GET', file);
     xhr.send();
     return false;
-});
+}, { capture: true, passive: false });
 
 function updateFileDragging(e, out) {
     let files = [];

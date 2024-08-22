@@ -187,13 +187,23 @@ public class BackendHandler
         AutoConfiguration.Internal.AutoConfigData settingsInternal = (Activator.CreateInstance(settingsType) as AutoConfiguration).InternalData.SharedData;
         List<JObject> fields = settingsInternal.Fields.Values.Select(f =>
         {
+            string typeName = f.IsSection ? "group" : T2IParamTypes.SharpTypeToDataType(f.Field.FieldType, false).ToString();
+            string[] vals = f.Field.GetCustomAttribute<SettingsOptionsAttribute>()?.Options ?? null;
+            string[] val_names = null;
+            if (vals is not null)
+            {
+                typeName = typeName == "LIST" ? "LIST" : "DROPDOWN";
+                val_names = f.Field.GetCustomAttribute<SettingsOptionsAttribute>()?.Names ?? null;
+            }
             return new JObject()
             {
                 ["name"] = f.Name,
-                ["type"] = NetTypeLabels[f.Field.FieldType],
+                ["type"] = typeName.ToLowerFast(),
                 ["description"] = f.Field.GetCustomAttribute<AutoConfiguration.ConfigComment>()?.Comments?.ToString() ?? "",
                 ["placeholder"] = f.Field.GetCustomAttribute<SuggestionPlaceholder>()?.Text ?? "",
-                ["is_secret"] = f.Field.GetCustomAttribute<ValueIsSecretAttribute>() is not null
+                ["is_secret"] = f.Field.GetCustomAttribute<ValueIsSecretAttribute>() is not null,
+                ["values"] = vals is null ? null : JArray.FromObject(vals),
+                ["value_names"] = val_names is null ? null : JArray.FromObject(val_names)
             };
         }).ToList();
         JObject netDesc = new()
@@ -348,6 +358,7 @@ public class BackendHandler
         await ShutdownBackendCleanly(data);
         newSettings = data.Backend.SettingsRaw.ExcludeSecretValuesThatMatch(newSettings, "\t<secret>");
         data.Backend.SettingsRaw.Load(newSettings);
+        Logs.Verbose($"Settings applied, now: {data.Backend.SettingsRaw.Save(true)}");
         if (title is not null)
         {
             data.Backend.Title = title;
@@ -448,7 +459,9 @@ public class BackendHandler
     /// <summary>Cause a backend to run its initializer, either immediately or in the next available slot.</summary>
     public void DoInitBackend(T2IBackendData data)
     {
+        data.Backend.LoadStatusReport ??= [];
         data.Backend.Status = BackendStatus.WAITING;
+        data.Backend.AddLoadStatus("Waiting to load...");
         if (data.BackType.CanLoadFast)
         {
             Task.Run(() => LoadBackendDirect(data));
@@ -465,10 +478,12 @@ public class BackendHandler
         if (!data.Backend.IsEnabled)
         {
             data.Backend.Status = BackendStatus.DISABLED;
+            data.Backend.LoadStatusReport = null;
             return false;
         }
         try
         {
+            data.Backend.AddLoadStatus("Will now load...");
             if (data.Backend.IsReal)
             {
                 Logs.Init($"Initializing backend #{data.ID} - {data.Backend.HandlerTypeData.Name}...");
@@ -485,6 +500,7 @@ public class BackendHandler
         {
             if (data.InitAttempts <= Program.ServerSettings.Backends.MaxBackendInitAttempts)
             {
+                data.Backend.AddLoadStatus("Load failed, will retry...");
                 data.Backend.Status = BackendStatus.WAITING;
                 Logs.Error($"Error #{data.InitAttempts} while initializing backend #{data.ID} - {data.Backend.HandlerTypeData.Name} - will retry");
                 await Task.Delay(TimeSpan.FromSeconds(1)); // Intentionally pause a second to give a chance for external issue to self-resolve.
@@ -493,6 +509,7 @@ public class BackendHandler
             else
             {
                 data.Backend.Status = BackendStatus.ERRORED;
+                data.Backend.LoadStatusReport = null;
                 if (ex is AggregateException aex)
                 {
                     ex = aex.InnerException;
@@ -513,24 +530,72 @@ public class BackendHandler
     {
         while (!HasShutdown)
         {
-            bool any = false;
-            while (BackendsToInit.TryDequeue(out T2IBackendData data) && !HasShutdown)
+            try
             {
-                bool loaded = LoadBackendDirect(data).Result;
-                any = any || loaded;
+                bool any = false;
+                while (BackendsToInit.TryDequeue(out T2IBackendData data) && !HasShutdown)
+                {
+                    bool loaded = LoadBackendDirect(data).Result;
+                    any = any || loaded;
+                }
+                if (any)
+                {
+                    try
+                    {
+                        ReassignLoadedModelsList();
+                    }
+                    catch (Exception ex)
+                    {
+                        Logs.Error($"Error while reassigning loaded models list: {ex}");
+                    }
+                }
+                T2IBackendData[] loading = [.. T2IBackends.Values.Where(b => b.Backend.LoadStatusReport is not null && b.Backend.LoadStatusReport.Count > 1)];
+                if (loading.Any())
+                {
+                    long now = Environment.TickCount64;
+                    foreach (T2IBackendData backend in loading)
+                    {
+                        AbstractT2IBackend.LoadStatus firstStatus = backend.Backend.LoadStatusReport[0];
+                        AbstractT2IBackend.LoadStatus lastStatus = backend.Backend.LoadStatusReport[^1];
+                        TimeSpan loadingFor = TimeSpan.FromMilliseconds(now - firstStatus.Time);
+                        if (loadingFor > TimeSpan.FromMinutes(1 + firstStatus.TrackerIndex * 2))
+                        {
+                            firstStatus.TrackerIndex++;
+                            if (backend.Backend.Status != BackendStatus.LOADING && backend.Backend.Status != BackendStatus.WAITING)
+                            {
+                                backend.Backend.LoadStatusReport = null;
+                                continue;
+                            }
+                            TimeSpan lastWaiting = TimeSpan.FromMilliseconds(now - lastStatus.Time);
+                            if (lastWaiting > TimeSpan.FromMinutes(1))
+                            {
+                                Logs.Init($"Backend #{backend.ID} - {backend.Backend.HandlerTypeData.Name} has been stuck on load-status='{lastStatus.Message}' for {lastWaiting.TotalMinutes:0.0} minutes...");
+                                if (lastWaiting > TimeSpan.FromMinutes(10))
+                                {
+                                    Logs.Error($"Something has most likely wrong while loading backend #{backend.ID} - {backend.Backend.HandlerTypeData.Name} - check logs for details. You may need to restart the backend, or Swarm itself.");
+                                }
+                                else if (lastWaiting > TimeSpan.FromMinutes(5))
+                                {
+                                    Logs.Warning($"Something may have gone wrong while loading backend #{backend.ID} - {backend.Backend.HandlerTypeData.Name} - check logs for details.");
+                                }
+                            }
+                            else if (loadingFor > TimeSpan.FromMinutes(15))
+                            {
+                                Logs.Init($"Backend #{backend.ID} - {backend.Backend.HandlerTypeData.Name} is still loading after {loadingFor.TotalMinutes:0.00} minutes. It may be fine, or it may have gotten stuck. Check logs for details.");
+                            }
+                            else
+                            {
+                                Logs.Init($"Backend #{backend.ID} - {backend.Backend.HandlerTypeData.Name} is still loading, and is probably fine...");
+                            }
+                        }
+                    }
+                }
             }
-            if (any)
+            catch (Exception ex)
             {
-                try
-                {
-                    ReassignLoadedModelsList();
-                }
-                catch (Exception ex)
-                {
-                    Logs.Error($"Error while reassigning loaded models list: {ex}");
-                }
+                Logs.Error($"Error in backend init monitor: {ex}");
             }
-            NewBackendInitSignal.WaitAsync(TimeSpan.FromSeconds(2)).Wait();
+            NewBackendInitSignal.WaitAsync(TimeSpan.FromSeconds(2), Program.GlobalProgramCancel).Wait();
         }
     }
 
@@ -786,7 +851,7 @@ public class BackendHandler
                 {
                     Logs.Verbose($"[BackendHandler] count notEnabled = {currentBackends.Count(b => !b.Backend.IsEnabled)}, shutDownReserve = {currentBackends.Count(b => b.Backend.ShutDownReserve)}, directReserved = {currentBackends.Count(b => b.Backend.Reservations > 0)}, statusNotRunning = {currentBackends.Count(b => b.Backend.Status != BackendStatus.RUNNING)}");
                     Logs.Warning("[BackendHandler] No backends are available! Cannot generate anything.");
-                    Failure = new InvalidOperationException("No backends available!");
+                    Failure = new SwarmUserErrorException("No backends available!");
                 }
                 return;
             }
@@ -799,7 +864,7 @@ public class BackendHandler
                     reason = $" Backends refused for the following reason(s):\n{UserInput.RefusalReasons.Select(r => $"- {r}").JoinString("\n")}";
                 }
                 Logs.Warning($"[BackendHandler] No backends match the request! Cannot generate anything.{reason}");
-                Failure = new InvalidOperationException($"No backends match the settings of the request given!{reason}");
+                Failure = new SwarmUserErrorException($"No backends match the settings of the request given!{reason}");
                 return;
             }
             List<T2IBackendData> available = [.. possible.Where(b => !b.CheckIsInUse).OrderBy(b => b.Usages)];
@@ -841,7 +906,7 @@ public class BackendHandler
             }
             if (available.Any())
             {
-                Handler.LoadHighestPressureNow(possible, available, () => ReleasePressure(true), Cancel);
+                Handler.LoadHighestPressureNow(possible, available, () => ReleasePressure(true), Pressure, Cancel);
             }
             if (Pressure is not null && Pressure.IsLoading && NotifyWillLoad is not null)
             {
@@ -867,12 +932,12 @@ public class BackendHandler
     /// <param name="notifyWillLoad">Optional callback for when this request will trigger a model load.</param>
     /// <param name="cancel">Optional request cancellation.</param>
     /// <exception cref="TimeoutException">Thrown if <paramref name="maxWait"/> is reached.</exception>
-    /// <exception cref="InvalidOperationException">Thrown if no backends are available.</exception>
+    /// <exception cref="SwarmReadableErrorException">Thrown if no backends are available.</exception>
     public async Task<T2IBackendAccess> GetNextT2IBackend(TimeSpan maxWait, T2IModel model = null, T2IParamInput input = null, Func<T2IBackendData, bool> filter = null, Session session = null, Action notifyWillLoad = null, CancellationToken cancel = default)
     {
         if (HasShutdown)
         {
-            throw new InvalidOperationException("Backend handler is shutting down.");
+            throw new SwarmReadableErrorException("Backend handler is shutting down.");
         }
         T2IBackendRequest request = new()
         {
@@ -900,7 +965,18 @@ public class BackendHandler
             }
             else if (request.Failure is not null)
             {
-                Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {request.Failure}");
+                while (request.Failure is AggregateException ae && ae.InnerException is not null)
+                {
+                    request.Failure = ae.InnerException;
+                }
+                if (request.Failure is SwarmReadableErrorException)
+                {
+                    Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {request.Failure.Message}");
+                }
+                else
+                {
+                    Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {request.Failure}");
+                }
                 throw request.Failure;
             }
             if (request.Cancel.IsCancellationRequested || Program.GlobalProgramCancel.IsCancellationRequested)
@@ -973,8 +1049,19 @@ public class BackendHandler
                     }
                     catch (Exception ex)
                     {
+                        while (ex is AggregateException ae && ae.InnerException is not null)
+                        {
+                            ex = ae.InnerException;
+                        }
                         request.Failure = ex;
-                        Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {ex}");
+                        if (ex is SwarmReadableErrorException)
+                        {
+                            Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {ex.Message}");
+                        }
+                        else
+                        {
+                            Logs.Error($"[BackendHandler] Backend request #{request.ID} failed: {ex}");
+                        }
                     }
                     if (request.Result is not null || request.Failure is not null)
                     {
@@ -1033,12 +1120,19 @@ public class BackendHandler
     }
 
     /// <summary>Internal helper route for <see cref="GetNextT2IBackend"/> to trigger a backend model load.</summary>
-    public void LoadHighestPressureNow(List<T2IBackendData> possible, List<T2IBackendData> available, Action releasePressure, CancellationToken cancel)
+    public void LoadHighestPressureNow(List<T2IBackendData> possible, List<T2IBackendData> available, Action releasePressure, ModelRequestPressure pressure, CancellationToken cancel)
     {
         List<T2IBackendData> availableLoaders = available.Where(b => b.Backend.CanLoadModels).ToList();
         if (availableLoaders.IsEmpty())
         {
-            Logs.Verbose($"[BackendHandler] No current backends are able to load models.");
+            if (pressure?.IsLoading ?? false)
+            {
+                Logs.Verbose($"[BackendHandler] A backend is currently loading the model.");
+            }
+            else
+            {
+                Logs.Verbose($"[BackendHandler] No current backends are able to load models.");
+            }
             return;
         }
         Logs.Verbose($"[BackendHandler] Will load highest pressure model...");
@@ -1079,7 +1173,7 @@ public class BackendHandler
                     {
                         Logs.Warning("[BackendHandler] All backends failed to load the model! Cannot generate anything.");
                         releasePressure();
-                        throw new InvalidOperationException("All available backends failed to load the model.");
+                        throw new SwarmReadableErrorException("All available backends failed to load the model.");
                     }
                     valid = valid.Where(b => b.Backend.CurrentModelName != highestPressure.Model.Name).ToList();
                     if (valid.IsEmpty())
@@ -1128,7 +1222,18 @@ public class BackendHandler
                         }
                         catch (Exception ex)
                         {
-                            Logs.Error($"[BackendHandler] backend #{availableBackend.ID} failed to load model with error: {ex}");
+                            while (ex is AggregateException ae && ae.InnerException is not null)
+                            {
+                                ex = ae.InnerException;
+                            }
+                            if (ex is SwarmReadableErrorException)
+                            {
+                                Logs.Error($"[BackendHandler] backend #{availableBackend.ID} failed to load model with error: {ex.Message}");
+                            }
+                            else
+                            {
+                                Logs.Error($"[BackendHandler] backend #{availableBackend.ID} failed to load model with error: {ex}");
+                            }
                         }
                         finally
                         {

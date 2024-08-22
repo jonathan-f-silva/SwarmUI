@@ -529,6 +529,9 @@ function getGenInput(input_overrides = {}, input_preoverrides = {}) {
 function refreshParameterValues(strong = true, callback = null) {
     genericRequest('TriggerRefresh', {strong: strong}, data => {
         loadUserData();
+        if (!gen_param_types) {
+            return;
+        }
         for (let param of data.list) {
             let origParam = gen_param_types.find(p => p.id == param.id);
             if (origParam) {
@@ -555,9 +558,14 @@ function refreshParameterValues(strong = true, callback = null) {
                 if ((param.type == "dropdown" || param.type == "model") && param.values) {
                     let val = elem.value;
                     let html = '';
-                    for (let value of param.values) {
+                    let values = param.values;
+                    let alt_names = param['value_names'];
+                    for (let i = 0; i < values.length; i++) {
+                        let value = values[i];
+                        let alt_name = alt_names && alt_names[i] ? alt_names[i] : value;
                         let selected = value == val ? ' selected="true"' : '';
-                        html += `<option value="${escapeHtmlNoBr(value)}"${selected}>${escapeHtml(value)}</option>`;
+                        let cleanName = htmlWithParen(alt_name);
+                        html += `<option data-cleanname="${cleanName}" value="${escapeHtmlNoBr(value)}"${selected}>${cleanName}</option>\n`;
                     }
                     elem.innerHTML = html;
                     presetElem.innerHTML = html;
@@ -1253,7 +1261,7 @@ class PromptTabCompleteClass {
                 }
                 startWithList.sort((a, b) => a.low.length - b.low.length || a.low.localeCompare(b.low));
                 containList.sort((a, b) => a.low.length - b.low.length || a.low.localeCompare(b.low));
-                baseList = startWithList.concat(containList).map(w => `<raw>${w.raw}`);
+                baseList = startWithList.concat(containList);
                 if (baseList.length > 50) {
                     baseList = baseList.slice(0, 50);
                 }
@@ -1317,37 +1325,50 @@ class PromptTabCompleteClass {
         let wordIndex = this.findLastWordIndex(prompt);
         for (let val of possible) {
             let name = val;
+            let clean_name = null;
             let desc = '';
             let apply = name;
             let isClickable = true;
             let index = lastBrace;
             let className = null;
             if (typeof val == 'object') {
-                [name, desc] = val;
-                if (this.prefixes[name].selfStanding) {
-                    apply = `<${name}>`;
+                if (val.raw) {
+                    name = val.name || '';
+                    desc = val.desc || '';
+                    if (val.clean) {
+                        clean_name = val.clean;
+                    }
+                    if (val.tag) {
+                        className = `tag-text tag-type-${val.tag}`;
+                    }
+                    if (val.count_display) {
+                        desc = `${desc} ${val.count_display}`.trim();
+                    }
+                    apply = name;
+                    index = wordIndex;
                 }
                 else {
-                    apply = `<${name}:`;
+                    [name, desc] = val;
+                    if (this.prefixes[name].selfStanding) {
+                        apply = `<${name}>`;
+                    }
+                    else {
+                        apply = `<${name}:`;
+                    }
                 }
-            }
-            else if (val.startsWith(`<raw>`)) {
-                name = val.substring(`<raw>`.length);
-                desc = '';
-                let split = name.split('\n');
-                name = split[0];
-                if (split.length > 1) {
-                    className = `tag-text tag-type-${split[1]}`;
-                }
-                apply = name;
-                index = wordIndex;
             }
             else if (val.startsWith('\n')) {
                 isClickable = false;
                 name = '';
                 desc = val.substring(1);
             }
-            let button = { key: desc.length == 0 ? name: `${name} - ${desc}`, className: className };
+            let button = { key: name, className: className };
+            if (desc) {
+                button.key_html = `${escapeHtml(clean_name || name)} <span class="parens">- ${escapeHtml(desc)}</span>`;
+            }
+            else {
+                button.key_html = escapeHtml(clean_name || name);
+            }
             if (isClickable) {
                 button.action = () => {
                     let areaPre = prompt.substring(0, index);

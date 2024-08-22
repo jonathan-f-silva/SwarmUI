@@ -89,7 +89,7 @@ public class SessionHandler
     {
         if (HasShutdown)
         {
-            throw new InvalidOperationException("Session handler is shutting down.");
+            throw new SwarmReadableErrorException("Session handler is shutting down.");
         }
         userId ??= LocalUserID;
         User user = GetUser(userId);
@@ -113,7 +113,7 @@ public class SessionHandler
                 return sess;
             }
         }
-        throw new InvalidOperationException("Something is critically wrong in the session handler, cannot generate unique IDs!");
+        throw new SwarmReadableErrorException("Something is critically wrong in the session handler, cannot generate unique IDs!");
     }
 
     /// <summary>Gets or creates the user for the given ID.</summary>
@@ -124,15 +124,19 @@ public class SessionHandler
         {
             userId = "_";
         }
-        return Users.GetOrCreate(userId, () =>
+        if (Users.TryGetValue(userId, out User user))
         {
-            lock (DBLock)
+            return user;
+        }
+        lock (DBLock)
+        {
+            return Users.GetOrAdd(userId, _ => // Intentional GetOrAdd due to special locking requirements (DBLock)
             {
                 User.DatabaseEntry userData = UserDatabase.FindById(userId);
                 userData ??= new() { ID = userId, RawSettings = "\n" };
                 return new(this, userData);
-            }
-        });
+            });
+        }
     }
 
     /// <summary>Tries to get the session for an id.</summary>

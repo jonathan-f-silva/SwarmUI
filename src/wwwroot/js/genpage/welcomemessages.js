@@ -54,16 +54,23 @@ function automaticWelcomeMessage(override = null) {
         `New feature (2024-05-28): YOLOv8 Segmentation\nAre you really into multi-face matching + detailing? 'segment' prompt syntax now supports YOLOv8 models! <a target="_blank" href="https://github.com/Stability-AI/StableSwarmUI/discussions/11#discussioncomment-9586318">(Feature Announcement Link)</a>`,
         `New feature (2024-06-02): TensorRT Support!\nFor making things go fasterer! <a target="_blank" href="https://github.com/Stability-AI/StableSwarmUI/discussions/11#discussioncomment-9641683">(Feature Announcement Link)</a>`,
         `New feature (2024-06-12): SD3-Medium!\nCool new model architecture! <a target="_blank" href="https://new.reddit.com/r/StableDiffusion/comments/1de65iz">(Reddit Post Link)</a>`,
+        `New feature (2024-07-31): Better dropdown text!\nNo more letter-spam samplers, now you can actually see what they're about! <a target="_blank" href="https://github.com/mcmonkeyprojects/SwarmUI/discussions/1#discussioncomment-10199321">(Feature Announcement Link)</a>`,
+        `New feature (2024-07-31): Support for Black Forest Labs' new Flux.1 models!\nRequires very high-end GPUs, but is the new best foundation model in the world. <a target="_blank" href="https://github.com/mcmonkeyprojects/SwarmUI/discussions/1#discussioncomment-10216583">(Feature Announcement Link)</a>`,
+        `New feature (2024-08-10): Image Editor SAM2 Autosegment\nWant the AI to help you mask even in manual mask painting? Now it can! <a target="_blank" href="https://github.com/mcmonkeyprojects/SwarmUI/discussions/1#discussioncomment-10296989">(Feature Announcement Link)</a>`,
         /* Version release notes */
-        `Release notes (2024-06-21): Check out the <a target="_blank" href="https://github.com/mcmonkeyprojects/SwarmUI/releases/tag/0.9.0-Beta">Release Notes for version 0.9.0 (Beta)</a>`,
-        `Release notes (2024-08-08): Check out the <a target="_blank" href="https://github.com/mcmonkeyprojects/SwarmUI/releases/tag/0.9.1-Beta">Release Notes for version 0.9.1 (Beta)</a>`
+        `Release notes (2024-07-08): Check out the <a target="_blank" href="https://github.com/mcmonkeyprojects/SwarmUI/releases/tag/0.9.1-Beta">Release Notes for version 0.9.1 (Beta)</a>`,
+        `Release notes (2024-08-10): Check out the <a target="_blank" href="https://github.com/mcmonkeyprojects/SwarmUI/releases/tag/0.9.2-Beta">Release Notes for version 0.9.2 (Beta)</a>`
     ];
     let dotnetNotice = document.getElementById('dotnet_missing_message');
     if (dotnetNotice) {
         messages.push(dotnetNotice.innerHTML.trim());
     }
+    let gitFailedNotice = document.getElementById('git_failed_message');
+    if (gitFailedNotice) {
+        messages.push(gitFailedNotice.innerHTML.trim());
+    }
     if (override == null) {
-        if (dotnetNotice) {
+        if (dotnetNotice || gitFailedNotice) {
             override = messages.length - 1;
         }
         else {

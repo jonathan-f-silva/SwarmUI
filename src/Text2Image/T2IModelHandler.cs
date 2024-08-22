@@ -89,6 +89,9 @@ public class T2IModelHandler
 
         /// <summary>Special cache of what text encoders the model appears to contain. Primarily for SD3 which has optional text encoders.</summary>
         public string TextEncoders { get; set; }
+
+        /// <summary>Special format indicators, such as "bnb_nf4".</summary>
+        public string SpecialFormat { get; set; }
     }
 
     public T2IModelHandler()
@@ -162,7 +165,7 @@ public class T2IModelHandler
         {
             return [];
         }
-        string allowedStr = session.User.Restrictions.AllowedModels;
+        string allowedStr = session is null ? ".*" : session.User.Restrictions.AllowedModels;
         if (allowedStr == ".*")
         {
             return [.. Models.Values];
@@ -178,6 +181,19 @@ public class T2IModelHandler
         List<string> result = new(list.Count + 2) { "(None)" };
         result.AddRange(list);
         return result;
+    }
+
+    public T2IModel GetModel(string name)
+    {
+        if (Models.TryGetValue(name, out T2IModel model))
+        {
+            return model;
+        }
+        if (ModelsAPI.InternalExtraModels(ModelType).TryGetValue(name, out JObject extraModelData))
+        {
+            return T2IModel.FromNetObject(extraModelData);
+        }
+        return null;
     }
 
     /// <summary>Refresh the model list.</summary>
@@ -244,17 +260,21 @@ public class T2IModelHandler
             {
                 return;
             }
-            ModelMetadataStore metadata = model.Metadata ?? new();
-            metadata.ModelFileVersion = modified;
-            metadata.ModelName = perFolder ? fileName : model.RawFilePath;
-            metadata.Title = model.Title;
-            metadata.Description = model.Description;
-            metadata.ModelClassType = model.ModelClass?.ID;
-            metadata.StandardWidth = model.StandardWidth;
-            metadata.StandardHeight = model.StandardHeight;
-            lock (MetadataLock)
+            lock (ModificationLock)
             {
-                cache.Upsert(metadata);
+                model.Metadata ??= new();
+                ModelMetadataStore metadata = model.Metadata;
+                metadata.ModelFileVersion = modified;
+                metadata.ModelName = perFolder ? fileName : model.RawFilePath;
+                metadata.Title = model.Title;
+                metadata.Description = model.Description;
+                metadata.ModelClassType = model.ModelClass?.ID;
+                metadata.StandardWidth = model.StandardWidth;
+                metadata.StandardHeight = model.StandardHeight;
+                lock (MetadataLock)
+                {
+                    cache.Upsert(metadata);
+                }
             }
         }
         catch (Exception ex)
@@ -277,7 +297,7 @@ public class T2IModelHandler
             {
                 File.Delete(swarmjspath);
             }
-            if (!model.RawFilePath.EndsWith(".safetensors") || Program.ServerSettings.Metadata.EditMetadataWriteJSON)
+            if ((!model.RawFilePath.EndsWith(".safetensors") && !model.RawFilePath.EndsWith(".sft")) || Program.ServerSettings.Metadata.EditMetadataWriteJSON)
             {
                 File.WriteAllText(swarmjspath, model.ToNetObject("modelspec.").ToString());
                 return;
@@ -299,9 +319,11 @@ public class T2IModelHandler
             JObject json = JObject.Parse(headerStr);
             long pos = reader.Position;
             JObject metaHeader = (json["__metadata__"] as JObject) ?? [];
-            if (!(metaHeader?.ContainsKey("modelspec.hash_sha256") ?? false))
+            if (model.Metadata.Hash is null)
             {
-                metaHeader["modelspec.hash_sha256"] = "0x" + Utilities.BytesToHex(SHA256.HashData(reader));
+                // Metadata fix for when we generated hashes into the file metadata headers, but did not save them into the metadata cache
+                model.Metadata.Hash = (metaHeader?.ContainsKey("modelspec.hash_sha256") ?? false) ? metaHeader.Value<string>("modelspec.hash_sha256") : "0x" + Utilities.BytesToHex(SHA256.HashData(reader));
+                ResetMetadataFrom(model);
             }
             void specSet(string key, string val)
             {
@@ -329,6 +351,7 @@ public class T2IModelHandler
             specSet("preprocessor", model.Metadata.Preprocessor);
             specSet("resolution", $"{model.Metadata.StandardWidth}x{model.Metadata.StandardHeight}");
             specSet("prediction_type", model.Metadata.PredictionType);
+            specSet("hash_sha256", model.Metadata.Hash);
             if (model.Metadata.IsNegativeEmbedding)
             {
                 specSet("is_negative_embedding", "true");
@@ -434,7 +457,7 @@ public class T2IModelHandler
             JObject headerData = [];
             JObject metaHeader = [];
             string textEncs = null;
-            if (model.Name.EndsWith(".safetensors"))
+            if (model.Name.EndsWith(".safetensors") || model.Name.EndsWith(".sft"))
             {
                 string headerText = T2IModel.GetSafetensorsHeaderFrom(model.RawFilePath);
                 if (headerText is not null)
@@ -516,6 +539,23 @@ public class T2IModelHandler
             }
             string altTriggerPhrase = triggerPhrases.JoinString(", ");
             T2IModelClass clazz = T2IModelClassSorter.IdentifyClassFor(model, headerData);
+            string specialFormat = null;
+            foreach (string key in headerData.Properties().Select(p => p.Name))
+            {
+                if (key.Contains("bitsandbytes__nf4"))
+                {
+                    specialFormat = "bnb_nf4";
+                    break;
+                }
+            }
+            if (model.Name.EndsWith(".gguf"))
+            {
+                specialFormat = "gguf";
+            }
+            if (specialFormat is not null)
+            {
+                Logs.Debug($"Model {model.Name} has special format '{specialFormat}'");
+            }
             string img = metaHeader?.Value<string>("modelspec.preview_image") ?? metaHeader?.Value<string>("modelspec.thumbnail") ?? metaHeader?.Value<string>("thumbnail") ?? metaHeader?.Value<string>("preview_image");
             if (img is not null && !img.StartsWith("data:image/"))
             {
@@ -537,7 +577,7 @@ public class T2IModelHandler
             img ??= autoImg;
             string[] tags = null;
             JToken tagsTok = metaHeader.Property("modelspec.tags")?.Value;
-            if (tagsTok is not null)
+            if (tagsTok is not null && tagsTok.Type != JTokenType.Null)
             {
                 if (tagsTok.Type == JTokenType.Array)
                 {
@@ -548,6 +588,21 @@ public class T2IModelHandler
                     tags = tagsTok.Value<string>().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
                 }
             }
+            static string pickBest(params string[] options)
+            {
+                foreach (string opt in options)
+                {
+                    if (!string.IsNullOrWhiteSpace(opt))
+                    {
+                        return opt;
+                    }
+                }
+                if (options.Length > 0)
+                {
+                    return options[0];
+                }
+                return null;
+            }
             metadata = new()
             {
                 ModelFileVersion = modified,
@@ -555,23 +610,24 @@ public class T2IModelHandler
                 TimeCreated = new DateTimeOffset(File.GetCreationTimeUtc(model.RawFilePath)).ToUnixTimeMilliseconds(),
                 ModelName = modelCacheId,
                 ModelClassType = clazz?.ID,
-                Title = metaHeader?.Value<string>("modelspec.title") ?? metaHeader?.Value<string>("title") ?? altName ?? fileName.BeforeLast('.'),
-                Author = metaHeader?.Value<string>("modelspec.author") ?? metaHeader?.Value<string>("author"),
-                Description = metaHeader?.Value<string>("modelspec.description") ?? metaHeader?.Value<string>("description") ?? altDescription,
+                Title = pickBest(metaHeader?.Value<string>("modelspec.title"), metaHeader?.Value<string>("title"), altName, fileName.BeforeLast('.')),
+                Author = pickBest(metaHeader?.Value<string>("modelspec.author"), metaHeader?.Value<string>("author")),
+                Description = pickBest(metaHeader?.Value<string>("modelspec.description"), metaHeader?.Value<string>("description"), altDescription),
                 PreviewImage = img,
                 StandardWidth = width,
                 StandardHeight = height,
-                UsageHint = metaHeader?.Value<string>("modelspec.usage_hint") ?? metaHeader?.Value<string>("usage_hint"),
-                MergedFrom = metaHeader?.Value<string>("modelspec.merged_from") ?? metaHeader?.Value<string>("merged_from"),
-                TriggerPhrase = metaHeader?.Value<string>("modelspec.trigger_phrase") ?? metaHeader?.Value<string>("trigger_phrase") ?? altTriggerPhrase,
-                License = metaHeader?.Value<string>("modelspec.license") ?? metaHeader?.Value<string>("license"),
-                Date = metaHeader?.Value<string>("modelspec.date") ?? metaHeader?.Value<string>("date"),
-                Preprocessor = metaHeader?.Value<string>("modelspec.preprocessor") ?? metaHeader?.Value<string>("preprocessor"),
+                UsageHint = pickBest(metaHeader?.Value<string>("modelspec.usage_hint"), metaHeader?.Value<string>("usage_hint")),
+                MergedFrom = pickBest(metaHeader?.Value<string>("modelspec.merged_from"), metaHeader?.Value<string>("merged_from")),
+                TriggerPhrase = pickBest(metaHeader?.Value<string>("modelspec.trigger_phrase"), metaHeader?.Value<string>("trigger_phrase"), altTriggerPhrase),
+                License = pickBest(metaHeader?.Value<string>("modelspec.license"), metaHeader?.Value<string>("license")),
+                Date = pickBest(metaHeader?.Value<string>("modelspec.date"), metaHeader?.Value<string>("date")),
+                Preprocessor = pickBest(metaHeader?.Value<string>("modelspec.preprocessor"), metaHeader?.Value<string>("preprocessor")),
                 Tags = tags,
-                IsNegativeEmbedding = (metaHeader?.Value<string>("modelspec.is_negative_embedding") ?? metaHeader?.Value<string>("is_negative_embedding")) == "true",
-                PredictionType = metaHeader?.Value<string>("modelspec.prediction_type") ?? metaHeader?.Value<string>("prediction_type"),
-                Hash = metaHeader?.Value<string>("modelspec.hash_sha256") ?? metaHeader?.Value<string>("hash_sha256"),
-                TextEncoders = textEncs
+                IsNegativeEmbedding = (pickBest(metaHeader?.Value<string>("modelspec.is_negative_embedding"), metaHeader?.Value<string>("is_negative_embedding")) ?? "false") == "true",
+                PredictionType = pickBest(metaHeader?.Value<string>("modelspec.prediction_type"), metaHeader?.Value<string>("prediction_type")),
+                Hash = pickBest(metaHeader?.Value<string>("modelspec.hash_sha256"), metaHeader?.Value<string>("hash_sha256")),
+                TextEncoders = textEncs,
+                SpecialFormat = pickBest(metaHeader?.Value<string>("modelspec.special_format"), metaHeader?.Value<string>("special_format"), specialFormat)
             };
             lock (MetadataLock)
             {
@@ -637,7 +693,7 @@ public class T2IModelHandler
         {
             string fn = file.Replace('\\', '/').AfterLast('/');
             string fullFilename = $"{prefix}{fn}";
-            if (fn.EndsWith(".safetensors") || fn.EndsWith(".engine"))
+            if (T2IModel.NativelySupportedModelExtensions.Contains(fn.AfterLast('.')))
             {
                 T2IModel model = new()
                 {

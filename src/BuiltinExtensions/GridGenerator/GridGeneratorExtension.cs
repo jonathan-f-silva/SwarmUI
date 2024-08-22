@@ -60,7 +60,7 @@ public class GridGeneratorExtension : Extension
         {
             if (call.Grid.MinWidth == 0)
             {
-                call.Grid.MinWidth = call.Grid.InitialParams.Get(T2IParamTypes.Width);
+                call.Grid.MinWidth = call.Grid.InitialParams.GetImageWidth();
             }
             if (call.Grid.MinHeight == 0)
             {
@@ -85,7 +85,7 @@ public class GridGeneratorExtension : Extension
                 (int width, int height) = T2IParamTypes.AspectRatioToSizeReference(val);
                 if (width > 0)
                 {
-                    (width, height) = Utilities.ResToModelFit(width, height, call.Grid.InitialParams.Get(T2IParamTypes.Width) * call.Grid.InitialParams.GetImageHeight());
+                    (width, height) = Utilities.ResToModelFit(width, height, call.Grid.InitialParams.GetImageWidth() * call.Grid.InitialParams.GetImageHeight());
                     call.Grid.MinWidth = Math.Min(call.Grid.MinWidth, width);
                     call.Grid.MinHeight = Math.Min(call.Grid.MinHeight, height);
                     call.Params["width"] = $"{width}";
@@ -131,7 +131,7 @@ public class GridGeneratorExtension : Extension
             }
             if (Volatile.Read(ref data.ErrorOut) is not null && !data.ContinueOnError)
             {
-                throw new InvalidOperationException("Errored");
+                throw new SwarmReadableErrorException("Grid run errored");
             }
             void setError(string message)
             {
@@ -342,11 +342,11 @@ public class GridGeneratorExtension : Extension
         {
             ex = ex.InnerException;
         }
-        if (ex is AggregateException && ex.InnerException is InvalidDataException)
+        if (ex is AggregateException && ex.InnerException is SwarmReadableErrorException)
         {
             ex = ex.InnerException;
         }
-        if (ex is InvalidDataException)
+        if (ex is SwarmReadableErrorException)
         {
             return new JObject() { ["error"] = $"Failed due to: {ex.Message}" };
         }
@@ -362,7 +362,7 @@ public class GridGeneratorExtension : Extension
         name = Utilities.StrictFilenameClean(name);
         if (name.Trim() == "")
         {
-            throw new InvalidDataException("Output folder name cannot be empty.");
+            throw new SwarmUserErrorException("Output folder name cannot be empty.");
         }
         return $"Grids/{name.Trim()}";
     }
@@ -396,7 +396,7 @@ public class GridGeneratorExtension : Extension
             baseParams = T2IAPI.RequestToParams(session, raw["baseParams"] as JObject);
             outputFolderName = CleanFolderName(outputFolderName);
         }
-        catch (InvalidDataException ex)
+        catch (SwarmReadableErrorException ex)
         {
             await socket.SendJson(new JObject() { ["error"] = ex.Message }, API.WebsocketTimeout);
             return null;
@@ -445,11 +445,16 @@ public class GridGeneratorExtension : Extension
                 List<(string, string)> y2Axis = grid.Axes.Count > 2 ? grid.Axes[2].Values.Where(v => !v.Skip).Select(proc).ToList() : [(null, null)];
                 int maxWidth = data.GeneratedOutputs.Max(x => x.Value.ToIS.Width);
                 int maxHeight = data.GeneratedOutputs.Max(x => x.Value.ToIS.Height);
-                Font font = GetFont(1);
+                float extraSizeMult = 1;
+                if (maxWidth > 800 || maxHeight > 800)
+                {
+                    extraSizeMult = 2;
+                }
+                Font font = GetFont(extraSizeMult);
                 TextOptions options = new(font);
                 FontRectangle rect = TextMeasurer.MeasureSize("ABCdefg Word Prefix", options);
                 int textWidth = (int)Math.Ceiling(rect.Width);
-                int rawTextHeight = (int)Math.Ceiling(rect.Height);
+                int rawTextHeight = (int)Math.Ceiling(rect.Height * 1.1);
                 int textHeight = rawTextHeight * 2;
                 int totalWidth = maxWidth * xAxis.Count + textWidth;
                 int totalHeight = maxHeight * (yAxis.Count * y2Axis.Count) + textHeight * y2Axis.Count;
@@ -466,15 +471,15 @@ public class GridGeneratorExtension : Extension
                         Logs.Verbose($"Measured text '{text}' as {measured.Width}x{measured.Height} in {width}x{height} with {lines} lines");
                         if (measured.Width < width * lines * 0.5)
                         {
-                            rto.Font = GetFont(2);
+                            rto.Font = GetFont(2 * extraSizeMult);
                         }
                         else if (measured.Width > width * lines * 2)
                         {
-                            rto.Font = GetFont(0.5f);
+                            rto.Font = GetFont(0.5f * extraSizeMult);
                         }
                         else if (measured.Width > width * lines)
                         {
-                            rto.Font = GetFont(0.75f);
+                            rto.Font = GetFont(0.75f * extraSizeMult);
                         }
                         m.DrawText(rto, text, brush);
                     }
@@ -533,7 +538,7 @@ public class GridGeneratorExtension : Extension
                 });
                 Logs.Info("Generated, saving...");
                 Image outImg = new(gridImg);
-                int batchId = xAxis.Count * yAxis.Count * y2Axis.Count;
+                int batchId = (xAxis.Count * yAxis.Count * y2Axis.Count) + 1;
                 Logs.Verbose("Apply metadata...");
                 (outImg, string metadata) = session.ApplyMetadata(outImg, grid.InitialParams, batchId);
                 Logs.Verbose("Metadata applied, save to file...");
@@ -541,7 +546,7 @@ public class GridGeneratorExtension : Extension
                 if (url == "ERROR")
                 {
                     data.ErrorOut = new JObject() { ["error"] = $"Server failed to save an image." };
-                    throw new InvalidOperationException();
+                    throw new SwarmReadableErrorException("Server failed to save an image.");
                 }
                 Logs.Verbose("Saved to file, send over websocket...");
                 await socket.SendJson(new JObject() { ["image"] = url, ["batch_index"] = $"{batchId}", ["metadata"] = string.IsNullOrWhiteSpace(metadata) ? null : metadata }, API.WebsocketTimeout);

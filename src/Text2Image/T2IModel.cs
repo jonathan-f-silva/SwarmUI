@@ -1,4 +1,6 @@
-﻿using Newtonsoft.Json.Linq;
+﻿using FreneticUtilities.FreneticExtensions;
+using Newtonsoft.Json.Linq;
+using SwarmUI.Utils;
 using System.IO;
 
 namespace SwarmUI.Text2Image;
@@ -36,6 +38,9 @@ public class T2IModel
     /// <summary>Metadata about this model.</summary>
     public T2IModelHandler.ModelMetadataStore Metadata;
 
+    /// <summary>Set of all model file extensions that are considered natively supported.</summary>
+    public static HashSet<string> NativelySupportedModelExtensions = ["safetensors", "sft", "engine", "gguf"];
+
     /// <summary>Gets a networkable copy of this model's data.</summary>
     public JObject ToNetObject(string prefix = "")
     {
@@ -51,8 +56,8 @@ public class T2IModel
             [$"{prefix}class"] = ModelClass?.Name,
             [$"{prefix}compat_class"] = ModelClass?.CompatClass,
             [$"{prefix}resolution"] = $"{StandardWidth}x{StandardHeight}",
-            [$"{prefix}standard_width"] = StandardWidth,
-            [$"{prefix}standard_height"] = StandardHeight,
+            [$"{prefix}standard_width"] = StandardWidth <= 0 ? ModelClass?.StandardWidth ?? 0 : StandardWidth,
+            [$"{prefix}standard_height"] = StandardHeight <= 0 ? ModelClass?.StandardHeight ?? 0 : StandardHeight,
             [$"{prefix}license"] = Metadata?.License,
             [$"{prefix}date"] = Metadata?.Date,
             [$"{prefix}prediction_type"] = Metadata?.PredictionType,
@@ -60,13 +65,29 @@ public class T2IModel
             [$"{prefix}trigger_phrase"] = Metadata?.TriggerPhrase,
             [$"{prefix}merged_from"] = Metadata?.MergedFrom,
             [$"{prefix}tags"] = Metadata?.Tags is null ? null : new JArray(Metadata.Tags),
-            [$"{prefix}is_supported_model_format"] = RawFilePath.EndsWith(".safetensors") || RawFilePath.EndsWith(".engine"),
+            [$"{prefix}is_supported_model_format"] = NativelySupportedModelExtensions.Contains(RawFilePath.AfterLast('.')),
             [$"{prefix}is_negative_embedding"] = Metadata?.IsNegativeEmbedding ?? false,
             [$"{prefix}local"] = true,
             [$"{prefix}time_created"] = Metadata?.TimeCreated ?? 0,
             [$"{prefix}time_modified"] = Metadata?.TimeModified ?? 0,
             [$"{prefix}hash"] = Metadata?.Hash ?? "",
-            [$"{prefix}hash_sha256"] = Metadata?.Hash ?? ""
+            [$"{prefix}hash_sha256"] = Metadata?.Hash ?? "",
+            [$"{prefix}special_format"] = Metadata?.SpecialFormat ?? ""
+        };
+    }
+
+    public static T2IModel FromNetObject(JObject data)
+    {
+        return new T2IModel()
+        {
+            Name = $"{data["name"]}",
+            Title = $"{data["title"]}",
+            Description = $"{data["description"]}",
+            PreviewImage = $"{data["preview_image"]}",
+            AnyBackendsHaveLoaded = (bool)data["loaded"],
+            ModelClass = T2IModelClassSorter.ModelClasses.GetValueOrDefault($"{data["architecture"]}") ?? null,
+            StandardWidth = (int)data["standard_width"],
+            StandardHeight = (int)data["standard_height"]
         };
     }
 
@@ -79,7 +100,7 @@ public class T2IModel
         long len = BitConverter.ToInt64(lenBuf, 0);
         if (len < 0 || len > 100 * 1024 * 1024)
         {
-            throw new InvalidOperationException($"Improper safetensors file {modelPath}. Wrong file type, or unreasonable header length: {len}");
+            throw new SwarmReadableErrorException($"Improper safetensors file {modelPath}. Wrong file type, or unreasonable header length: {len}");
         }
         byte[] dataBuf = new byte[len];
         file.ReadExactly(dataBuf, 0, (int)len);

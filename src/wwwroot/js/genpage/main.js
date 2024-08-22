@@ -38,7 +38,9 @@ let statusBarElem = getRequiredElementById('top_status_bar');
 
 /** Called when the user clicks the clear batch button. */
 function clearBatch() {
-    getRequiredElementById('current_image_batch').innerHTML = '';
+    let currentImageBatchDiv = getRequiredElementById('current_image_batch');
+    currentImageBatchDiv.innerHTML = '';
+    currentImageBatchDiv.dataset.numImages = 0;
 }
 
 /** Reference to the auto-clear-batch toggle checkbox. */
@@ -67,6 +69,10 @@ function toggleAutoLoadImages() {
 
 function clickImageInBatch(div) {
     let imgElem = div.getElementsByTagName('img')[0];
+    if (currentImgSrc == div.dataset.src) {
+        imageFullView.showImage(div.dataset.src, div.dataset.metadata);
+        return;
+    }
     setCurrentImage(div.dataset.src, div.dataset.metadata, div.dataset.batch_id ?? '', imgElem.dataset.previewGrow == 'true');
 }
 
@@ -162,7 +168,11 @@ function formatMetadata(metadata) {
     }
     let data;
     try {
-        data = JSON.parse(metadata).sui_image_params;
+        let readable = interpretMetadata(metadata);
+        if (!readable) {
+            return '';
+        }
+        data = JSON.parse(readable).sui_image_params;
     }
     catch (e) {
         console.log(`Error parsing metadata '${metadata}': ${e}`);
@@ -178,13 +188,17 @@ function formatMetadata(metadata) {
                         key = cleaner(key);
                     }
                     let hash = Math.abs(hashCode(key.toLowerCase().replaceAll(' ', '').replaceAll('_', ''))) % 10;
+                    let added = '';
+                    if (key.includes('model') || key.includes('lora') || key.includes('embedding')) {
+                        added += ' param_view_block_model';
+                    }
                     if (typeof val == 'object') {
-                        result += `<span class="param_view_block tag-text tag-type-${hash}"><span class="param_view_name">${escapeHtml(key)}</span>: `;
+                        result += `<span class="param_view_block tag-text tag-type-${hash}${added}"><span class="param_view_name">${escapeHtml(key)}</span>: `;
                         appendObject(val);
                         result += `</span>, `;
                     }
                     else {
-                        result += `<span class="param_view_block tag-text tag-type-${hash}"><span class="param_view_name">${escapeHtml(key)}</span>: <span class="param_view tag-text-soft tag-type-${hash}">${escapeHtml(`${val}`)}</span></span>, `;
+                        result += `<span class="param_view_block tag-text tag-type-${hash}${added}"><span class="param_view_name">${escapeHtml(key)}</span>: <span class="param_view tag-text-soft tag-type-${hash}">${escapeHtml(`${val}`)}</span></span>, `;
                     }
                 }
             }
@@ -523,14 +537,21 @@ function toggleStar(path, rawSrc) {
     });
 }
 
-function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false) {
+function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false, canReparse = true) {
     currentImgSrc = src;
     currentMetadataVal = metadata;
-    if (smoothAdd) {
+    if ((smoothAdd || !metadata) && canReparse) {
         let image = new Image();
         image.src = src;
         image.onload = () => {
-            setCurrentImage(src, metadata, batchId, previewGrow);
+            if (!metadata) {
+                parseMetadata(image, (data, parsedMetadata) => {
+                    setCurrentImage(src, parsedMetadata, batchId, previewGrow, false, false);
+                });
+            }
+            else {
+                setCurrentImage(src, metadata, batchId, previewGrow, false, false);
+            }
         };
         return;
     }
@@ -638,7 +659,8 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
                 let ctx = canvas.getContext('2d');
                 ctx.drawImage(tmpImg, 0, 0);
                 canvas.toBlob(blob => {
-                    let file = new File([blob], imagePathClean, { type: img.src.substring(img.src.lastIndexOf('.') + 1) });
+                    let type = img.src.substring(img.src.lastIndexOf('.') + 1);
+                    let file = new File([blob], imagePathClean, { type: `image/${type.length > 0 && type.length < 20 ? type : 'png'}` });
                     let container = new DataTransfer(); 
                     container.items.add(file);
                     initImageParam.files = container.files;
@@ -679,7 +701,15 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             mainGenHandler.doGenerate(input_overrides, { 'initimagecreativity': 0.4 });
         }));
     }, '', 'Runs an instant generation with this image as the input and scale doubled');
-    let metaParsed = JSON.parse(metadata) ?? { is_starred: false };
+    let metaParsed = { is_starred: false };
+    if (metadata) {
+        try {
+            metaParsed = JSON.parse(metadata);
+        }
+        catch (e) {
+            console.log(`Error parsing metadata for image: ${e}, metadata was ${metadata}`);
+        }
+    }
     includeButton(metaParsed.is_starred ? 'Starred' : 'Star', (e, button) => {
         toggleStar(imagePathClean, src);
     }, (metaParsed.is_starred ? ' star-button button-starred-image' : ' star-button'), 'Toggles this image as starred - starred images get moved to a separate folder and highlighted');
@@ -723,15 +753,16 @@ function appendImage(container, imageSrc, batchId, textPreview, metadata = '', t
     if (typeof container == 'string') {
         container = getRequiredElementById(container);
     }
-    let div = createDiv(null, `image-block image-block-${type} image-batch-${batchId == "folder" ? "folder" : (batchId % 2)}`);
+    container.dataset.numImages = (container.dataset.numImages ?? 0) + 1;
+    let div = createDiv(null, `image-block image-block-${type} image-batch-${batchId == "folder" ? "folder" : (container.dataset.numImages % 2 ? "1" : "0")}`);
     div.dataset.batch_id = batchId;
     div.dataset.preview_text = textPreview;
     div.dataset.src = imageSrc;
     div.dataset.metadata = metadata;
     let img = document.createElement('img');
     img.addEventListener('load', () => {
-        let ratio = img.naturalWidth / img.naturalHeight;
         if (batchId != "folder") {
+            let ratio = img.naturalWidth / img.naturalHeight;
             div.style.width = `calc(${roundToStr(ratio * 10, 2)}rem + 2px)`;
         }
     });
@@ -855,8 +886,8 @@ let genForeverInterval, genPreviewsInterval;
 
 let lastGenForeverParams = null;
 
-function doGenForeverOnce() {
-    if (num_current_gens > 0) {
+function doGenForeverOnce(minQueueSize) {
+    if (num_current_gens >= minQueueSize) {
         return;
     }
     let allParams = getGenInput();
@@ -875,9 +906,10 @@ function toggleGenerateForever() {
     if (isGeneratingForever) {
         button.innerText = 'Stop Generating';
         let delaySeconds = parseFloat(getUserSetting('generateforeverdelay', '0.1'));
+        let minQueueSize = Math.max(1, parseInt(getUserSetting('generateforeverqueuesize', '1')));
         let delayMs = Math.max(parseInt(delaySeconds * 1000), 1);
         genForeverInterval = setInterval(() => {
-            doGenForeverOnce();
+            doGenForeverOnce(minQueueSize);
         }, delayMs);
     }
     else {
@@ -1028,6 +1060,12 @@ function listImageHistoryFolderAndFiles(path, isRefresh, callback, depth) {
     let prefix = path == '' ? '' : (path.endsWith('/') ? path : `${path}/`);
     genericRequest('ListImages', {'path': path, 'depth': depth, 'sortBy': sortBy, 'sortReverse': reverse}, data => {
         let folders = data.folders.sort((a, b) => b.toLowerCase().localeCompare(a.toLowerCase()));
+        function isPreSortFile(f) {
+            return f.src == 'index.html'; // Grid index files
+        }
+        let preFiles = data.files.filter(f => isPreSortFile(f));
+        let postFiles = data.files.filter(f => !isPreSortFile(f));
+        data.files = preFiles.concat(postFiles);
         let mapped = data.files.map(f => {
             let fullSrc = `${prefix}${f.src}`;
             return { 'name': fullSrc, 'data': { 'src': `${getImageOutPrefix()}/${fullSrc}`, 'fullsrc': fullSrc, 'name': f.src, 'metadata': f.metadata } };
@@ -1071,6 +1109,10 @@ function buttonsForImage(fullsrc, src) {
                         if (div) {
                             div.remove();
                         }
+                        div = getRequiredElementById('current_image_batch').querySelector(`.image-block[data-src="${src}"]`);
+                        if (div) {
+                            div.remove();
+                        }
                     }
                     let currentImage = document.getElementById('current_image_img');
                     if (currentImage && currentImage.dataset.src == src) {
@@ -1079,18 +1121,20 @@ function buttonsForImage(fullsrc, src) {
                 });
             }
         }
-    ];;
+    ];
 }
 
 function describeImage(image) {
     let buttons = buttonsForImage(image.data.fullsrc, image.data.src);
     let parsedMeta = { is_starred: false };
     if (image.data.metadata) {
+        let metadata = image.data.metadata;
         try {
-            parsedMeta = JSON.parse(image.data.metadata);
+            metadata = interpretMetadata(image.data.metadata);
+            parsedMeta = JSON.parse(metadata);
         }
         catch (e) {
-            console.log(`Failed to parse image metadata: ${e}`);
+            console.log(`Failed to parse image metadata: ${e}, metadata was ${metadata}`);
         }
     }
     let description = image.data.name + "\n" + formatMetadata(image.data.metadata);
@@ -1098,7 +1142,7 @@ function describeImage(image) {
     let dragImage = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}`;
     let imageSrc = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}?preview=true`;
     let searchable = description;
-    return { name, description, buttons, 'image': imageSrc, 'dragimage': dragImage, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable };
+    return { name, description, buttons, 'image': imageSrc, 'dragimage': dragImage, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable, display: name };
 }
 
 function selectImageInHistory(image, div) {
@@ -1190,6 +1234,12 @@ function reviseBackendFeatureSet() {
     }
     else {
         removeMe.push('sd3');
+    }
+    if (curModelArch == 'Flux.1-dev') {
+        addMe.push('flux-dev');
+    }
+    else {
+        removeMe.push('flux-dev');
     }
     let anyChanged = false;
     for (let add of addMe) {
@@ -1356,9 +1406,9 @@ function pageSizer() {
     function setPageBars() {
         if (altRegion.style.display != 'none') {
             altText.style.height = 'auto';
-            altText.style.height = `${Math.max(altText.scrollHeight, 15) + 5}px`;
+            altText.style.height = `calc(min(15rem, ${Math.max(altText.scrollHeight, 15) + 5}px))`;
             altNegText.style.height = 'auto';
-            altNegText.style.height = `${Math.max(altNegText.scrollHeight, 15) + 5}px`;
+            altNegText.style.height = `calc(min(15rem, ${Math.max(altNegText.scrollHeight, 15) + 5}px))`;
             altRegion.style.top = `calc(-${altText.offsetHeight + altNegText.offsetHeight + altImageRegion.offsetHeight}px - 2rem)`;
         }
         setCookie('barspot_pageBarTop', pageBarTop, 365);
@@ -1573,6 +1623,15 @@ function pageSizer() {
             return false;
         }
     });
+    altNegText.addEventListener('keydown', (e) => {
+        if (e.key == 'Enter' && !e.shiftKey) {
+            altNegText.dispatchEvent(new Event('change'));
+            getRequiredElementById('alt_generate_button').click();
+            e.preventDefault();
+            e.stopPropagation();
+            return false;
+        }
+    });
     altText.addEventListener('input', (e) => {
         let inputPrompt = document.getElementById('input_prompt');
         if (inputPrompt) {
@@ -1623,7 +1682,7 @@ function pageSizer() {
 /** Clears out and resets the image-batch view, only if the user wants that. */
 function resetBatchIfNeeded() {
     if (autoClearBatchElem.checked) {
-        getRequiredElementById('current_image_batch').innerHTML = '';
+        clearBatch();
     }
 }
 
@@ -1636,7 +1695,17 @@ function loadUserData(callback) {
             for (let val of data.autocompletions) {
                 let split = val.split('\n');
                 let datalist = autoCompletionsList[val[0]];
-                let entry = { low: split[0].toLowerCase(), raw: val };
+                let entry = { name: split[0], low: split[0].toLowerCase(), clean: split[1], raw: val };
+                if (split.length > 3) {
+                    entry.tag = split[2];
+                }
+                if (split.length > 4) {
+                    count = parseInt(split[3]) || 0;
+                    if (count) {
+                        entry.count = count;
+                        entry.count_display = largeCountStringify(count);
+                    }
+                }
                 if (!datalist) {
                     datalist = [];
                     autoCompletionsList[val[0]] = datalist;
@@ -1687,6 +1756,7 @@ function updateAllModels(models) {
     }
     selector.value = selectorVal;
     pickle2safetensor_load();
+    modelDownloader.reloadFolders();
 }
 
 let shutdownConfirmationText = translatable("Are you sure you want to shut SwarmUI down?");
@@ -1733,7 +1803,7 @@ function setTitles() {
 }
 setTitles();
 
-function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = null, callback = null) {
+function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = null, callback = null, deleteButton = true) {
     if (!confirm(alt_confirm || `This will install ${path} which is a third-party extension maintained by community developer '${author}'.\nWe cannot make any guarantees about it.\nDo you wish to install?`)) {
         return;
     }
@@ -1744,7 +1814,9 @@ function doFeatureInstaller(path, author, name, button_div_id, alt_confirm = nul
         buttonDiv.appendChild(createDiv('', null, "Installed! Please wait while backends restart. If it doesn't work, you may need to restart Swarm."));
         reviseStatusBar();
         setTimeout(() => {
-            buttonDiv.remove();
+            if (deleteButton) {
+                buttonDiv.remove();
+            }
             hasAppliedFirstRun = false;
             reviseStatusBar();
             if (callback) {
@@ -1775,6 +1847,24 @@ function installTensorRT() {
         getRequiredElementById('tensorrt_mustinstall').style.display = 'none';
         getRequiredElementById('tensorrt_modal_ready').style.display = '';
     });
+}
+
+function installSAM2() {
+    doFeatureInstaller('https://github.com/kijai/ComfyUI-segment-anything-2', 'kijai', 'sam2', 'install_sam2_button', null, () => {
+        $('#sam2_installer').modal('hide');
+    }, false);
+}
+
+function installBNBNF4() {
+    doFeatureInstaller('https://github.com/comfyanonymous/ComfyUI_bitsandbytes_NF4', 'comfyanonymous', 'bnb_nf4', 'install_bnbnf4_button', `This will install BnB NF4 support developed by Comfy and lllyasviel (AGPL License).\nDo you wish to install?`, () => {
+        $('#bnb_nf4_installer').modal('hide');
+    }, false);
+}
+
+function installGGUF() {
+    doFeatureInstaller('https://github.com/city96/ComfyUI-GGUF', 'city96', 'gguf', 'install_gguf_button', `This will install GGUF support developed by city96.\nDo you wish to install?`, () => {
+        $('#gguf_installer').modal('hide');
+    }, false);
 }
 
 function hideRevisionInputs() {
@@ -1899,25 +1989,39 @@ function openEmptyEditor() {
 
 function upvertAutoWebuiMetadataToSwarm(metadata) {
     let realData = {};
-    [realData['prompt'], remains] = metadata.split("\nNegative prompt: ");
-    let lines = remains.split('\n');
-    realData['negativeprompt'] = lines.slice(0, -1).join('\n');
-    let dataParts = lines[lines.length - 1].split(',').map(x => x.split(':').map(y => y.trim()));
-    for (let part of dataParts) {
-        if (part.length == 2) {
-            let clean = cleanParamName(part[0]);
-            if (rawGenParamTypesFromServer.find(x => x.id == clean)) {
-                realData[clean] = part[1];
-            }
-            else if (clean == "size") {
-                let sizeParts = part[1].split('x').map(x => parseInt(x));
-                if (sizeParts.length == 2) {
-                    realData['width'] = sizeParts[0];
-                    realData['height'] = sizeParts[1];
+    // Auto webui has no "proper formal" syntax like JSON or anything,
+    // just a mishmash of text, and there's no way to necessarily predict newlines/colons/etc,
+    // so just make best effort to import based on some easy examples
+    if (metadata.includes("\nNegative prompt: ")) {
+        let parts = metadata.split("\nNegative prompt: ");
+        realData['prompt'] = parts[0];
+        realData['negativeprompt'] = parts[1];
+        metadata = parts.slice(2).join("\n");
+    }
+    else {
+        let lines = metadata.split('\n');
+        realData['prompt'] = lines.slice(0, lines[0].length - 1).join('\n');
+        metadata = lines[lines.length - 1];
+    }
+    let lines = metadata.split('\n');
+    if (lines.length > 0) {
+        let dataParts = lines[lines.length - 1].split(',').map(x => x.split(':').map(y => y.trim()));
+        for (let part of dataParts) {
+            if (part.length == 2) {
+                let clean = cleanParamName(part[0]);
+                if (rawGenParamTypesFromServer.find(x => x.id == clean)) {
+                    realData[clean] = part[1];
                 }
-            }
-            else {
-                realData[part[0]] = part[1];
+                else if (clean == "size") {
+                    let sizeParts = part[1].split('x').map(x => parseInt(x));
+                    if (sizeParts.length == 2) {
+                        realData['width'] = sizeParts[0];
+                        realData['height'] = sizeParts[1];
+                    }
+                }
+                else {
+                    realData[part[0]] = part[1];
+                }
             }
         }
     }
@@ -1950,6 +2054,92 @@ function remapMetadataKeys(metadata, keymap) {
 
 const imageMetadataKeys = ['prompt', 'Prompt', 'parameters', 'Parameters', 'userComment', 'UserComment', 'model', 'Model'];
 
+function interpretMetadata(metadata) {
+    if (metadata instanceof Uint8Array) {
+        let prefix = metadata.slice(0, 8);
+        let data = metadata.slice(8);
+        let encodeType = new TextDecoder().decode(prefix);
+        if (encodeType.startsWith('UNICODE')) {
+            if (data[0] == 0 && data[1] != 0) { // This is slightly dirty detection, but it works at least for English text.
+                metadata = decodeUtf16LE(data);
+            }
+            else {
+                metadata = decodeUtf16(data);
+            }
+        }
+        else {
+            metadata = new TextDecoder().decode(data);
+        }
+    }
+    if (metadata) {
+        metadata = metadata.trim();
+        if (metadata.startsWith('{')) {
+            let json = JSON.parse(metadata);
+            if ('sui_image_params' in json) {
+                // It's swarm, we're good
+            }
+            else if ("Prompt" in json) {
+                // Fooocus
+                json = remapMetadataKeys(json, fooocusMetadataMap);
+                metadata = JSON.stringify({ 'sui_image_params': json });
+            }
+            else {
+                // Don't know - discard for now.
+                metadata = null;
+            }
+        }
+        else {
+            let lines = metadata.split('\n');
+            if (lines.length > 1) {
+                metadata = upvertAutoWebuiMetadataToSwarm(metadata);
+            }
+            else {
+                // ???
+                metadata = null;
+            }
+        }
+    }
+    return metadata;
+}
+
+function parseMetadata(data, callback) {
+    exifr.parse(data).then(parsed => {
+        if (parsed && imageMetadataKeys.some(key => key in parsed)) {
+            return parsed;
+        }
+        return exifr.parse(data, imageMetadataKeys);
+    }).then(parsed => {
+        let metadata = null;
+        if (parsed) {
+            if (parsed.parameters) {
+                metadata = parsed.parameters;
+            }
+            else if (parsed.Parameters) {
+                metadata = parsed.Parameters;
+            }
+            else if (parsed.prompt) {
+                metadata = parsed.prompt;
+            }
+            else if (parsed.UserComment) {
+                metadata = parsed.UserComment;
+            }
+            else if (parsed.userComment) {
+                metadata = parsed.userComment;
+            }
+            else if (parsed.model) {
+                metadata = parsed.model;
+            }
+            else if (parsed.Model) {
+                metadata = parsed.Model;
+            }
+        }
+        metadata = interpretMetadata(metadata);
+        callback(data, metadata);
+    }).catch(err => {
+        callback(data, null);
+    });
+}
+
 function imageInputHandler() {
     let imageArea = getRequiredElementById('current_image');
     imageArea.addEventListener('dragover', (e) => {
@@ -1963,80 +2153,9 @@ function imageInputHandler() {
             let file = e.dataTransfer.files[0];
             if (file.type.startsWith('image/')) {
                 let reader = new FileReader();
-                parsemetadata = (e) => {
-                    let data = e.target.result;
-                    exifr.parse(data).then(parsed => {
-                        if (parsed && imageMetadataKeys.some(key => key in parsed)) {
-                            return parsed;
-                        }
-                        return exifr.parse(data, imageMetadataKeys);
-                    }).then(parsed => {
-                        let metadata = null;
-                        if (parsed) {
-                            if (parsed.parameters) {
-                                metadata = parsed.parameters;
-                            }
-                            else if (parsed.Parameters) {
-                                metadata = parsed.Parameters;
-                            }
-                            else if (parsed.prompt) {
-                                metadata = parsed.prompt;
-                            }
-                            else if (parsed.UserComment) {
-                                metadata = parsed.UserComment;
-                            }
-                            else if (parsed.userComment) {
-                                metadata = parsed.userComment;
-                            }
-                            else if (parsed.model) {
-                                metadata = parsed.model;
-                            }
-                            else if (parsed.Model) {
-                                metadata = parsed.Model;
-                            }
-                        }
-                        if (metadata instanceof Uint8Array) {
-                            let prefix = metadata.slice(0, 8);
-                            let data = metadata.slice(8);
-                            let encodeType = new TextDecoder().decode(prefix);
-                            metadata = encodeType.startsWith('UNICODE') ? decodeUtf16(data) : new TextDecoder().decode(data);
-                        }
-                        if (metadata) {
-                            metadata = metadata.trim();
-                            if (metadata.startsWith('{')) {
-                                let json = JSON.parse(metadata);
-                                if ('sui_image_params' in json) {
-                                    // It's swarm, we're good
-                                }
-                                else if ("Prompt" in json) {
-                                    // Fooocus
-                                    json = remapMetadataKeys(json, fooocusMetadataMap);
-                                    metadata = JSON.stringify({ 'sui_image_params': json });
-                                }
-                                else {
-                                    // Don't know - discard for now.
-                                    metadata = null;
-                                }
-                            }
-                            else {
-                                let lines = metadata.split('\n');
-                                if (lines.length > 1) {
-                                    metadata = upvertAutoWebuiMetadataToSwarm(metadata);
-                                }
-                                else {
-                                    // ???
-                                    metadata = null;
-                                }
-                            }
-                        }
-                        setCurrentImage(data, metadata);
-                    }).catch(err => {
-                        setCurrentImage(e.target.result, null);
-                    });
-                };
                 reader.onload = (e) => {
                     try {
-                        parsemetadata(e);
+                        parseMetadata(e.target.result, (data, metadata) => { setCurrentImage(data, metadata); });
                     }
                     catch (e) {
                         setCurrentImage(e.target.result, null);
@@ -2131,6 +2250,15 @@ function storeImageToHistoryWithCurrentParams(img) {
 
 function genpageLoad() {
     console.log('Load page...');
+    $('#toptablist').on('shown.bs.tab', function (e) {
+        let versionDisp = getRequiredElementById('version_display');
+        if (e.target.id == 'maintab_comfyworkflow') {
+            versionDisp.style.display = 'none';
+        }
+        else {
+            versionDisp.style.display = '';
+        }
+    });
     window.imageEditor = new ImageEditor(getRequiredElementById('image_editor_input'), true, true, () => setPageBarsFunc(), () => needsNewPreview());
     let editorSizebar = getRequiredElementById('image_editor_sizebar');
     window.imageEditor.onActivate = () => {
@@ -2148,6 +2276,33 @@ function genpageLoad() {
         { key: 'Store Full Canvas To History', action: () => {
             let img = window.imageEditor.getMaximumImageData();
             storeImageToHistoryWithCurrentParams(img);
+        }},
+        { key: 'Auto Segment Image (SAM2)', action: () => {
+            if (!currentBackendFeatureSet.includes('sam2')) {
+                $('#sam2_installer').modal('show');
+            }
+            else {
+                let img = window.imageEditor.getFinalImageData();
+                let genData = getGenInput();
+                genData['controlnetimageinput'] = img;
+                genData['controlnetstrength'] = 1;
+                genData['controlnetpreprocessor'] = 'Segment Anything 2 Global Autosegment base_plus';
+                genData['images'] = 1;
+                genData['prompt'] = '';
+                delete genData['batchsize'];
+                genData['donotsave'] = true;
+                genData['controlnetpreviewonly'] = true;
+                makeWSRequestT2I('GenerateText2ImageWS', genData, data => {
+                    if (!data.image) {
+                        return;
+                    }
+                    let newImg = new Image();
+                    newImg.onload = () => {
+                        imageEditor.addImageLayer(newImg);
+                    };
+                    newImg.src = data.image;
+                });
+            }
         }}
     ];
     pageSizer();

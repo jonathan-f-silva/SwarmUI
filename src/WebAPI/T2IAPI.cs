@@ -151,7 +151,7 @@ public static class T2IAPI
                 Logs.Warning($"T2I image request from user {session.User.UserID} had request parameter '{key}', but that parameter is unrecognized, skipping...");
             }
         }
-        if (rawInput.TryGetValue("presets", out JToken presets))
+        if (rawInput.TryGetValue("presets", out JToken presets) && presets.Any())
         {
             foreach (JToken presetName in presets.Values())
             {
@@ -163,6 +163,7 @@ public static class T2IAPI
                 }
                 presetObj.ApplyTo(user_input);
             }
+            user_input.ExtraMeta["presets_used"] = presets.Values().Select(v => v.ToString()).ToList();
         }
         user_input.ApplySpecialLogic();
         return user_input;
@@ -185,12 +186,7 @@ public static class T2IAPI
         {
             user_input = RequestToParams(session, rawInput);
         }
-        catch (InvalidOperationException ex)
-        {
-            setError(ex.Message);
-            return;
-        }
-        catch (InvalidDataException ex)
+        catch (SwarmReadableErrorException ex)
         {
             setError(ex.Message);
             return;
@@ -313,6 +309,10 @@ public static class T2IAPI
             {
                 rows--;
             }
+            if (imgs.Length <= GridShapeTable.Length)
+            {
+                (columns, rows) = GridShapeTable[imgs.Length - 1];
+            }
             int widthPerImage = imgs.Max(i => i.Width);
             int heightPerImage = imgs.Max(i => i.Height);
             ISImageRGBA grid = new(widthPerImage * columns, heightPerImage * rows);
@@ -334,6 +334,22 @@ public static class T2IAPI
         T2IEngine.PostBatchEvent?.Invoke(new(user_input, [.. griddables]));
         output(new JObject() { ["discard_indices"] = JToken.FromObject(discard) });
     }
+
+    public static (int, int)[] GridShapeTable =
+        [
+            (1, 1), // 1
+            (2, 1), // 2
+            (3, 1), // 3
+            (2, 2), // 4
+            (3, 2), // 5
+            (3, 2), // 6
+            (4, 2), // 7
+            (4, 2), // 8
+            (3, 3), // 9
+            (5, 2), // 10
+            (4, 3), // 11
+            (4, 3), // 12
+        ];
 
     [API.APIDescription("Takes an image and stores it directly in the user's history.\nBehaves identical to GenerateText2Image but never queues a generation.",
         """
@@ -357,11 +373,7 @@ public static class T2IAPI
         {
             user_input = RequestToParams(session, rawInput);
         }
-        catch (InvalidOperationException ex)
-        {
-            return new() { ["error"] = ex.Message };
-        }
-        catch (InvalidDataException ex)
+        catch (SwarmReadableErrorException ex)
         {
             return new() { ["error"] = ex.Message };
         }

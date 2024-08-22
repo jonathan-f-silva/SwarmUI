@@ -105,6 +105,11 @@ public class Program
         {
             Logs.Init("Parsing command line...");
             ParseCommandLineArgs(args);
+            if (GetCommandLineFlagAsBool("help", false))
+            {
+                PrintCommandLineHelp();
+                return;
+            }
             Logs.Init("Loading settings file...");
             DataDir = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, CommandLineFlags.GetValueOrDefault("data_dir", "Data"));
             SettingsFilePath = CommandLineFlags.GetValueOrDefault("settings_file", "Data/Settings.fds");
@@ -122,9 +127,10 @@ public class Program
             Logs.Init("Applying command line settings...");
             ApplyCommandLineSettings();
         }
-        catch (InvalidDataException ex)
+        catch (SwarmReadableErrorException ex)
         {
             Logs.Error($"Command line arguments given are invalid: {ex.Message}");
+            PrintCommandLineHelp();
             return;
         }
         Logs.StartLogSaving();
@@ -226,7 +232,8 @@ public class Program
         timer.Check("Web launch");
         try
         {
-            Task.WaitAll([.. waitFor], Utilities.TimedCancel(TimeSpan.FromSeconds(5)));
+            using CancellationTokenSource cancel = Utilities.TimedCancel(TimeSpan.FromSeconds(5));
+            Task.WaitAll([.. waitFor], cancel.Token);
         }
         catch (Exception ex)
         {
@@ -298,7 +305,7 @@ public class Program
         {
             Logs.Error($"Failed to create directories for models. You may need to check your ModelRoot or SDModelFolder settings. {ex.Message}");
         }
-        T2IModelSets["Stable-Diffusion"] = new() { ModelType = "Stable-Diffusion", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDModelFolder), Utilities.CombinePathWithAbsolute(modelRoot, "tensorrt")] };
+        T2IModelSets["Stable-Diffusion"] = new() { ModelType = "Stable-Diffusion", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDModelFolder), Utilities.CombinePathWithAbsolute(modelRoot, "tensorrt"), Utilities.CombinePathWithAbsolute(modelRoot, "unet")] };
         T2IModelSets["VAE"] = new() { ModelType = "VAE", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDVAEFolder)] };
         T2IModelSets["LoRA"] = new() { ModelType = "LoRA", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDLoraFolder)] };
         T2IModelSets["Embedding"] = new() { ModelType = "Embedding", FolderPaths = [Utilities.CombinePathWithAbsolute(modelRoot, ServerSettings.Paths.SDEmbeddingFolder)] };
@@ -336,7 +343,7 @@ public class Program
         Logs.Info("Shutting down...");
         GlobalCancelSource.Cancel();
         Logs.Verbose("Shutdown webserver...");
-        WebServer.WebApp.StopAsync().Wait();
+        WebServer.WebApp?.StopAsync().Wait();
         Logs.Verbose("Shutdown backends...");
         Backends?.Shutdown();
         Logs.Verbose("Shutdown sessions...");
@@ -505,7 +512,7 @@ public class Program
         {
             "dev" or "development" => "Development",
             "prod" or "production" => "Production",
-            var mode => throw new InvalidDataException($"aspweb_mode value of '{mode}' is not valid")
+            var mode => throw new SwarmUserErrorException($"aspweb_mode value of '{mode}' is not valid")
         };
         Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", environment);
         string host = GetCommandLineFlag("host", ServerSettings.Network.Host);
@@ -562,6 +569,7 @@ public class Program
     public static void ReapplySettings()
     {
         Logs.MinimumLevel = Enum.Parse<Logs.LogLevel>(GetCommandLineFlag("loglevel", ServerSettings.Logs.LogLevel), true);
+        Logs.RepeatTimestampAfter = TimeSpan.FromMinutes(ServerSettings.Logs.RepeatTimestampAfterMinutes);
     }
     #endregion
 
@@ -574,17 +582,34 @@ public class Program
             string arg = args[i];
             if (!arg.StartsWith("--"))
             {
-                throw new InvalidDataException($"Error: Unknown command line argument '{arg}'");
+                throw new SwarmUserErrorException($"Error: Unknown command line argument '{arg}'");
             }
             string key = arg[2..].ToLower();
-            string value = "true";
-            if (i + 1 < args.Length && !args[i + 1].StartsWith("--"))
+            string value;
+            int equalsCharIndex = key.IndexOf('=');
+            if (equalsCharIndex != -1)
             {
-                value = args[++i];
+                if (equalsCharIndex == 0 || equalsCharIndex == (key.Length - 1))
+                {
+                    throw new SwarmUserErrorException($"Error: Invalid commandline argument '{arg}'");
+                }
+                value = key[(equalsCharIndex + 1)..];
+                key = key[..equalsCharIndex];
+            }
+            else
+            {
+                if (i + 1 < args.Length && !args[i + 1].StartsWith("--"))
+                {
+                    value = args[++i];
+                }
+                else
+                {
+                    value = "true";
+                }
             }
             if (CommandLineFlags.ContainsKey(key))
             {
-                throw new InvalidDataException($"Error: Duplicate command line flag '{key}'");
+                throw new SwarmUserErrorException($"Error: Duplicate command line flag '{key}'");
             }
             CommandLineFlags[key] = value;
         }
@@ -618,8 +643,37 @@ public class Program
         {
             "true" or "yes" or "1" => true,
             "false" or "no" or "0" => false,
-            var mode => throw new InvalidDataException($"Command line flag '{key}' value of '{mode}' is not valid")
+            var mode => throw new SwarmUserErrorException($"Command line flag '{key}' value of '{mode}' is not valid")
         };
+    }
+
+    /// <summary>Prints a CLI usage help message, for when CLI args were wrong.</summary>
+    public static void PrintCommandLineHelp()
+    {
+        Console.WriteLine($"""
+            SwarmUI v{Utilities.Version}
+
+            Options:
+              [--data_dir <path>] [--settings_file <path>] [--backends_file <path>] [--environment <Production/Development>]
+              [--host <hostname>] [--port <port>] [--asp_loglevel <level>] [--loglevel <level>]
+              [--user_id <username>] [--lock_settings <true/false>] [--ngrok-path <path>] [--cloudflared-path <path>]
+              [--proxy-region <region>] [--ngrok-basic-auth <auth-info>] [--launch_mode <mode>] [--help <true/false>]
+
+            Generally, CLI args are almost never used. When they are are, they usually fall into the following categories:
+              - `settings_file`, `lock_settings`, `backends_file`, `loglevel` may be useful to advanced users will multiple instances.
+              - `cloudflared-path` is useful for remote tunnel users (eg colab).
+              - `host`, `port`, and `launch_mode` may be useful in developmental usages where you need to quickly or automatically change network paths.
+
+            Additional documentation about the CLI args is available online: <https://github.com/mcmonkeyprojects/SwarmUI/blob/master/docs/Command%20Line%20Arguments.md> or in the `docs/` folder of this repo.
+
+            Find more information about SwarmUI in the GitHub readme and docs folder:
+              - Project Github: <https://github.com/mcmonkeyprojects/SwarmUI>
+              - Documentation: <https://github.com/mcmonkeyprojects/SwarmUI/tree/master/docs>
+              - Feature Announcements: <https://github.com/mcmonkeyprojects/SwarmUI/discussions/1>
+              - License (MIT): <https://github.com/mcmonkeyprojects/SwarmUI/blob/master/LICENSE.txt>
+
+            Join the Discord <https://discord.gg/q2y38cqjNw> to discuss the project, get support, see announcements, etc.
+            """);
     }
     #endregion
 }

@@ -166,7 +166,7 @@ public static class BasicAPIFeatures
                             }
                             else
                             {
-                                await Utilities.DownloadFile("https://github.com/comfyanonymous/ComfyUI/releases/download/latest/ComfyUI_windows_portable_nvidia_cu121_or_cpu.7z", "dlbackend/comfyui_dl.7z", updateProgress);
+                                await Utilities.DownloadFile("https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z", "dlbackend/comfyui_dl.7z", updateProgress);
                             }
                         }
                         catch (HttpRequestException ex)
@@ -216,13 +216,17 @@ public static class BasicAPIFeatures
                         updateProgress(0, 0, 0);
                         await Process.Start(new ProcessStartInfo(Path.GetFullPath("dlbackend/vc_redist.x64.exe"), "/quiet /install /passive /norestart") { UseShellExecute = true }).WaitForExitAsync(Program.GlobalProgramCancel);
                         path = "dlbackend/comfy/ComfyUI/main.py";
+                        string comfyFolderPath = Path.GetFullPath("dlbackend/comfy");
+                        string fetchResp = await Utilities.RunGitProcess($"fetch", $"{comfyFolderPath}/ComfyUI");
+                        Logs.Debug($"ComfyUI Install git fetch response: {fetchResp}");
+                        string checkoutResp = await Utilities.RunGitProcess($"checkout master", $"{comfyFolderPath}/ComfyUI");
+                        Logs.Debug($"ComfyUI Install git checkout master response: {checkoutResp}");
                         if (install_amd)
                         {
                             Logs.LogLevel level = Logs.MinimumLevel;
                             Logs.MinimumLevel = Logs.LogLevel.Verbose;
                             try
                             {
-                                string comfyFolderPath = Path.GetFullPath("dlbackend/comfy");
                                 await output("Fixing Comfy install...");
                                 // Note: the old Python 3.10 comfy file is needed for AMD, and it has a cursed git config (mandatory auth header? argh) so this is a hack-fix for that
                                 File.WriteAllBytes("dlbackend/comfy/ComfyUI/.git/config", "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tignorecase = true\n[remote \"origin\"]\n\turl = https://github.com/comfyanonymous/ComfyUI\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[gc]\n\tauto = 0\n[branch \"master\"]\n\tremote = origin\n\tmerge = refs/heads/master\n[lfs]\n\trepositoryformatversion = 0\n[remote \"upstream\"]\n\turl = https://github.com/comfyanonymous/ComfyUI.git\n\tfetch = +refs/heads/*:refs/remotes/upstream/*\n".EncodeUTF8());
@@ -272,7 +276,7 @@ public static class BasicAPIFeatures
                         gpu = mostVRAM.ID;
                     }
                     await output("Enabling ComfyUI...");
-                    Program.Backends.AddNewOfType(Program.Backends.BackendTypes["comfyui_selfstart"], new ComfyUISelfStartBackend.ComfyUISelfStartSettings() { StartScript = path, GPU_ID = gpu, ExtraArgs = extraArgs.Trim() });
+                    Program.Backends.AddNewOfType(Program.Backends.BackendTypes["comfyui_selfstart"], new ComfyUISelfStartBackend.ComfyUISelfStartSettings() { StartScript = path, GPU_ID = $"{gpu}", ExtraArgs = extraArgs.Trim() });
                     break;
                 }
             case "none":
@@ -289,13 +293,15 @@ public static class BasicAPIFeatures
         {
             foreach (string model in models.Split(','))
             {
-                string file = model.Trim() switch
+                (string file, string subfolder) = model.Trim() switch
                 {
-                    "sd15" => "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors",
-                    "sd21" => "https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors",
-                    "sdxl1" => "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
-                    "sdxl1refiner" => "https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors",
-                    _ => null
+                    "sd15" => ("https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors", "OfficialStableDiffusion"),
+                    "sd21" => ("https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors", "OfficialStableDiffusion"),
+                    "sdxl1" => ("https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors", "OfficialStableDiffusion"),
+                    "sdxl1refiner" => ("https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors", "OfficialStableDiffusion"),
+                    "fluxschnell" => ("https://huggingface.co/Comfy-Org/flux1-schnell/resolve/main/flux1-schnell-fp8.safetensors", "Flux"),
+                    "fluxdev" => ("https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors", "Flux"),
+                    _ => (null, null)
                 };
                 if (file is null)
                 {
@@ -304,7 +310,8 @@ public static class BasicAPIFeatures
                     return null;
                 }
                 await output($"Downloading model from '{file}'... please wait...");
-                string folder = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDModelFolder) + "/OfficialStableDiffusion";
+                string path = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDModelFolder);
+                string folder = $"{path}/{subfolder}";
                 Directory.CreateDirectory(folder);
                 string filename = file.AfterLast('/');
                 try

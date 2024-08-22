@@ -36,7 +36,9 @@ public class BackendAPI
                         "name": "namehere",
                         "type": "typehere",
                         "description": "descriptionhere",
-                        "placeholder": "placeholderhere"
+                        "placeholder": "placeholderhere",
+                        "values": ["a", "b"], // For dropdowns only
+                        "value_names": ["Alpha", "Beta"] // For dropdowns only, optional even then
                     }
                 ],
                 "is_standard": false
@@ -173,6 +175,7 @@ public class BackendAPI
             return new() { ["error"] = "Missing settings." };
         }
         FDSSection parsed = FDSSection.FromSimple(settings.ToBasicObject());
+        Logs.Verbose($"New settings to apply: {parsed}");
         BackendHandler.T2IBackendData result = await Program.Backends.EditById(backend_id, parsed, title);
         if (result is null)
         {

@@ -15,6 +15,7 @@ class SwarmEmbedLoaderListProvider:
     CATEGORY = "SwarmUI/internal"
     RETURN_TYPES = ("EMBEDDING",)
     FUNCTION = "load_embed"
+    DESCRIPTION = "Internal node just intended to provide a list of currently known embeddings to Swarm. You can also use it to blindly load an embedding file if you need to."
 
     def load_embed(self, embed_name):
         embed_path = folder_paths.get_full_path("embedding", embed_name)
@@ -22,8 +23,36 @@ class SwarmEmbedLoaderListProvider:
         return (sd,)
 
 
+class SwarmJustLoadTheModelPlease:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "clip": ("CLIP",),
+                "vae": ("VAE",),
+            }
+        }
+
+    CATEGORY = "SwarmUI/internal"
+    RETURN_TYPES = ()
+    FUNCTION = "just_load"
+    OUTPUT_NODE = True
+    DESCRIPTION = "Internal node that acts as a final output for a model/clip/vae. This allows swarm to load models when needed without generating anything."
+
+    def just_load(self, model, clip, vae):
+        if model is None:
+            raise ValueError("The model failed to load")
+        if clip is None:
+            raise ValueError("The text encoders (CLIP) failed to load")
+        if vae is None:
+            raise ValueError("The VAE failed to load")
+        return {}
+
+
 NODE_CLASS_MAPPINGS = {
     "SwarmEmbedLoaderListProvider": SwarmEmbedLoaderListProvider,
+    "SwarmJustLoadTheModelPlease": SwarmJustLoadTheModelPlease
 }
 
 

@@ -5,6 +5,7 @@
 class ImageEditorTool {
     constructor(editor, id, icon, name, description, hotkey = null) {
         this.editor = editor;
+        this.isTempTool = false;
         this.id = id;
         this.icon = icon;
         this.iconImg = new Image();
@@ -93,6 +94,33 @@ class ImageEditorTool {
 
     onGlobalMouseUp(e) {
         return false;
+    }
+}
+
+/**
+ * A special temporary tool, a wrapper of the base tool class that prevents default behaviors.
+ */
+class ImageEditorTempTool extends ImageEditorTool {
+    constructor(editor, id, icon, name, description, hotkey = null) {
+        super(editor, id, icon, name, description, hotkey);
+        this.isTempTool = true;
+    }
+
+    makeDivs() {
+    }
+
+    setActive() {
+        if (this.active) {
+            return;
+        }
+        this.active = true;
+    }
+
+    setInactive() {
+        if (!this.active) {
+            return;
+        }
+        this.active = false;
     }
 }
 
@@ -502,6 +530,7 @@ class ImageEditorToolBrush extends ImageEditorTool {
             <label>Color:&nbsp;</label>
             <input type="text" class="auto-number id-col1" style="width:75px;flex-grow:0;" value="#ffffff">
             <input type="color" class="id-col2" value="#ffffff">
+            <button class="basic-button id-col3">Pick</button>
         </div>`;
         let radiusHtml = `<div class="image-editor-tool-block id-rad-block">
                 <label>Radius:&nbsp;</label>
@@ -509,7 +538,7 @@ class ImageEditorToolBrush extends ImageEditorTool {
                 <div class="auto-slider-range-wrapper" style="${getRangeStyle(10, 1, 1024)}">
                     <input type="range" style="flex-grow: 2" data-ispot="true" class="auto-slider-range id-rad2" min="1" max="1024" step="1" value="10" oninput="updateRangeStyle(arguments[0])" onchange="updateRangeStyle(arguments[0])">
                 </div>
-            </div>`
+            </div>`;
         let opacityHtml = `<div class="image-editor-tool-block id-opac-block">
                 <label>Opacity:&nbsp;</label>
                 <input type="number" style="width: 40px;" class="auto-number id-opac1" min="1" max="100" step="1" value="100">
@@ -524,6 +553,7 @@ class ImageEditorToolBrush extends ImageEditorTool {
             this.configDiv.innerHTML = colorHTML + radiusHtml + opacityHtml;
             this.colorText = this.configDiv.querySelector('.id-col1');
             this.colorSelector = this.configDiv.querySelector('.id-col2');
+            this.colorPickButton = this.configDiv.querySelector('.id-col3');
             this.colorText.addEventListener('input', () => {
                 this.colorSelector.value = this.colorText.value;
                 this.onConfigChange();
@@ -531,6 +561,17 @@ class ImageEditorToolBrush extends ImageEditorTool {
             this.colorSelector.addEventListener('change', () => {
                 this.colorText.value = this.colorSelector.value;
                 this.onConfigChange();
+            });
+            this.colorPickButton.addEventListener('click', () => {
+                if (this.colorPickButton.classList.contains('interrupt-button')) {
+                    this.colorPickButton.classList.remove('interrupt-button');
+                    this.editor.activateTool(this.id);
+                }
+                else {
+                    this.colorPickButton.classList.add('interrupt-button');
+                    this.editor.pickerTool.toolFor = this;
+                    this.editor.activateTool('picker');
+                }
             });
         }
         enableSliderForBox(this.configDiv.querySelector('.id-rad-block'));
@@ -542,6 +583,13 @@ class ImageEditorToolBrush extends ImageEditorTool {
         this.radiusNumber.addEventListener('change', () => { this.onConfigChange(); });
         this.opacityNumber.addEventListener('change', () => { this.onConfigChange(); });
         this.lastTouch = null;
+    }
+
+    setColor(col) {
+        this.color = col;
+        this.colorText.value = col;
+        this.colorSelector.value = col;
+        this.colorPickButton.classList.remove('interrupt-button');
     }
 
     onConfigChange() {
@@ -639,6 +687,204 @@ class ImageEditorToolBrush extends ImageEditorTool {
     }
 }
 
+
+/**
+ * The Paint Bucket tool.
+ */
+class ImageEditorToolBucket extends ImageEditorTool {
+    constructor(editor) {
+        super(editor, 'paintbucket', 'paintbucket', 'Paint Bucket', 'Fill an area with a color.\nHotKey: P', 'p');
+        this.cursor = 'crosshair';
+        this.color = '#ffffff';
+        this.threshold = 10;
+        this.opacity = 1;
+        let colorHTML = `
+        <div class="image-editor-tool-block">
+            <label>Color:&nbsp;</label>
+            <input type="text" class="auto-number id-col1" style="width:75px;flex-grow:0;" value="#ffffff">
+            <input type="color" class="id-col2" value="#ffffff">
+            <button class="basic-button id-col3">Pick</button>
+        </div>`;
+        let thresholdHtml = `<div class="image-editor-tool-block id-thresh-block">
+                <label>Threshold:&nbsp;</label>
+                <input type="number" style="width: 40px;" class="auto-number id-thresh1" min="1" max="256" step="1" value="10">
+                <div class="auto-slider-range-wrapper" style="${getRangeStyle(10, 1, 256)}">
+                    <input type="range" style="flex-grow: 2" data-ispot="true" class="auto-slider-range id-thresh2" min="1" max="256" step="1" value="10" oninput="updateRangeStyle(arguments[0])" onchange="updateRangeStyle(arguments[0])">
+                </div>
+            </div>`;
+        this.configDiv.innerHTML = colorHTML + thresholdHtml;
+        this.colorText = this.configDiv.querySelector('.id-col1');
+        this.colorSelector = this.configDiv.querySelector('.id-col2');
+        this.colorPickButton = this.configDiv.querySelector('.id-col3');
+        this.colorText.addEventListener('input', () => {
+            this.colorSelector.value = this.colorText.value;
+            this.onConfigChange();
+        });
+        this.colorSelector.addEventListener('change', () => {
+            this.colorText.value = this.colorSelector.value;
+            this.onConfigChange();
+        });
+        this.colorPickButton.addEventListener('click', () => {
+            if (this.colorPickButton.classList.contains('interrupt-button')) {
+                this.colorPickButton.classList.remove('interrupt-button');
+                this.editor.activateTool(this.id);
+            }
+            else {
+                this.colorPickButton.classList.add('interrupt-button');
+                this.editor.pickerTool.toolFor = this;
+                this.editor.activateTool('picker');
+            }
+        });
+        enableSliderForBox(this.configDiv.querySelector('.id-thresh-block'));
+        this.thresholdNumber = this.configDiv.querySelector('.id-thresh1');
+        this.thresholdSelector = this.configDiv.querySelector('.id-thresh2');
+        this.thresholdNumber.addEventListener('change', () => { this.onConfigChange(); });
+        this.lastTouch = null;
+    }
+
+    setColor(col) {
+        this.color = col;
+        this.colorText.value = col;
+        this.colorSelector.value = col;
+        this.colorPickButton.classList.remove('interrupt-button');
+    }
+
+    onConfigChange() {
+        this.color = this.colorText.value;
+        this.threshold = parseInt(this.thresholdNumber.value);
+        this.editor.redraw();
+    }
+
+    doBucket(x, y) {
+        let layer = this.editor.activeLayer;
+        let [targetX, targetY] = layer.canvasCoordToLayerCoord(x, y);
+        targetX = Math.round(targetX);
+        targetY = Math.round(targetY);
+        if (targetX < 0 || targetY < 0 || targetX >= layer.width || targetY >= layer.height) {
+            return;
+        }
+        layer.saveBeforeEdit();
+        layer.hasAnyContent = true;
+        let canvas = layer.canvas;
+        let ctx = layer.ctx;
+        let refImage = document.createElement('canvas');
+        refImage.width = canvas.width;
+        refImage.height = canvas.height;
+        let refCtx = refImage.getContext('2d');
+        for (let i = 0; i < this.editor.layers.length; i++) {
+            let belowLayer = this.editor.layers[i];
+            if (belowLayer.isMask) {
+                continue;
+            }
+            let offset = layer.getOffset();
+            belowLayer.drawToBack(refCtx, -offset[0], -offset[1], 1);
+            if (belowLayer == layer) {
+                break;
+            }
+        }
+        let refData = refCtx.getImageData(0, 0, refImage.width, refImage.height);
+        let refRawData = refData.data;
+        let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let [width, height] = [imageData.width, imageData.height];
+        let maskData = new Uint8Array(width * height);
+        let rawData = imageData.data;
+        let threshold = this.threshold;
+        let newColor = [parseInt(this.color.substring(1, 3), 16), parseInt(this.color.substring(3, 5), 16), parseInt(this.color.substring(5, 7), 16)];
+        function getPixelIndex(x, y) {
+            return (y * width + x) * 4;
+        }
+        function getColorAt(x, y) {
+            let index = getPixelIndex(x, y);
+            return [refRawData[index], refRawData[index + 1], refRawData[index + 2], refRawData[index + 3]];
+        }
+        let startColor = getColorAt(targetX, targetY);
+        function isInRange(targetColor) {
+            return Math.abs(targetColor[0] - startColor[0]) + Math.abs(targetColor[1] - startColor[1]) + Math.abs(targetColor[2] - startColor[2]) + Math.abs(targetColor[3] - startColor[3]) <= threshold;
+        }
+        let hits = 0;
+        function setPixel(x, y) {
+            maskData[y * width + x] = 1;
+            let index = getPixelIndex(x, y);
+            rawData[index] = newColor[0];
+            rawData[index + 1] = newColor[1];
+            rawData[index + 2] = newColor[2];
+            rawData[index + 3] = 255;
+            hits++;
+        }
+        function canInclude(x, y) {
+            return x >= 0 && y >= 0 && x < width && y < height && maskData[y * width + x] == 0 && isInRange(getColorAt(x, y));
+        }
+        let stack = [[targetX, targetY]];
+        while (stack.length > 0) {
+            let [x, y] = stack.pop();
+            if (!canInclude(x, y)) {
+                continue;
+            }
+            if (isInRange(getColorAt(x, y))) {
+                setPixel(x, y);
+                if (canInclude(x - 1, y)) { stack.push([x - 1, y]); }
+                if (canInclude(x + 1, y)) { stack.push([x + 1, y]); }
+                if (canInclude(x, y - 1)) { stack.push([x, y - 1]); }
+                if (canInclude(x, y + 1)) { stack.push([x, y + 1]); }
+            }
+        }
+        ctx.putImageData(imageData, 0, 0);
+        this.editor.markChanged();
+    }
+
+    onMouseDown(e) {
+        this.doBucket(this.editor.mouseX, this.editor.mouseY);
+    }
+}
+
+/**
+ * The Color Picker tool, a special hidden sub-tool.
+ */
+class ImageEditorToolPicker extends ImageEditorTempTool {
+    constructor(editor, id, icon, name, description, hotkey = null) {
+        super(editor, id, icon, name, description, hotkey);
+        this.cursor = 'none';
+        this.color = '#ffffff';
+        this.picking = false;
+        this.toolFor = null;
+    }
+
+    draw() {
+        this.drawCircleBrush(this.editor.mouseX, this.editor.mouseY, 2);
+    }
+
+    pickNow() {
+        let imageData = this.editor.ctx.getImageData(this.editor.mouseX, this.editor.mouseY, 1, 1).data;
+        this.color = `#${imageData[0].toString(16).padStart(2, '0')}${imageData[1].toString(16).padStart(2, '0')}${imageData[2].toString(16).padStart(2, '0')}`;
+        this.toolFor.setColor(this.color);
+        this.editor.redraw();
+    }
+
+    onMouseDown(e) {
+        if (this.picking || !this.toolFor) {
+            return;
+        }
+        this.picking = true;
+        this.pickNow();
+    }
+
+    onMouseMove(e) {
+        if (this.picking) {
+            this.pickNow();
+        }
+    }
+
+    onGlobalMouseUp(e) {
+        if (this.picking) {
+            this.picking = false;
+            this.toolFor.setColor(this.color);
+            this.editor.activateTool(this.toolFor.id);
+            return true;
+        }
+        return false;
+    }
+}
+
 /**
  * A single layer within an image editing interface.
  * This can be real (user-controlled) OR sub-layers (sometimes user-controlled) OR temporary buffers.
@@ -684,6 +930,7 @@ class ImageEditorLayer {
             this.infoSubDiv.innerText = (this.isMask ? `Mask` : `Image`);
             this.createButtons();
             this.editor.sortLayers();
+            this.editor.redraw();
         }, true);
         this.menuPopover.appendChild(buttonConvert);
         let buttonInvert = createDiv(null, 'sui_popover_model_button');
@@ -995,8 +1242,11 @@ class ImageEditor {
         this.addTool(new ImageEditorToolSelect(this));
         this.addTool(new ImageEditorToolBrush(this, 'brush', 'paintbrush', 'Paintbrush', 'Draw on the image.\nHotKey: B', false, 'b'));
         this.addTool(new ImageEditorToolBrush(this, 'eraser', 'eraser', 'Eraser', 'Erase parts of the image.\nHotKey: E', true, 'e'));
+        this.addTool(new ImageEditorToolBucket(this));
+        this.pickerTool = new ImageEditorToolPicker(this, 'picker', 'paintbrush', 'Color Picker', 'Pick a color from the image.');
+        this.addTool(this.pickerTool);
         this.activateTool('brush');
-        this.maxHistory = 10;
+        this.maxHistory = 15;
     }
 
     clearVars() {
@@ -1023,7 +1273,7 @@ class ImageEditor {
 
     addHistoryEntry(entry) {
         if (this.editHistory.length >= this.maxHistory) {
-            this.editHistory.splice(1);
+            this.editHistory.splice(0, 1);
         }
         this.editHistory.push(entry);
     }
@@ -1044,11 +1294,15 @@ class ImageEditor {
     }
 
     activateTool(id) {
-        if (this.activeTool) {
+        let newTool = this.tools[id];
+        if (!newTool) {
+            throw new Error(`Tool ${id} not found`);
+        }
+        if (this.activeTool && !newTool.isTempTool) {
             this.activeTool.setInactive();
         }
-        this.tools[id].setActive();
-        this.activeTool = this.tools[id];
+        newTool.setActive();
+        this.activeTool = newTool;
     }
 
     createCanvas() {
@@ -1587,9 +1841,11 @@ class ImageEditor {
                 layer.drawToBack(this.maskHelperCtx, this.offsetX, this.offsetY, this.zoomLevel);
             }
         }
+        this.ctx.save();
         this.ctx.globalAlpha = this.activeLayer.isMask ? 0.8 : 0.3;
+        this.ctx.globalCompositeOperation = 'luminosity';
         this.ctx.drawImage(this.maskHelperCanvas, 0, 0);
-        this.ctx.globalAlpha = 1;
+        this.ctx.restore();
         // UI:
         let [boundaryX, boundaryY] = this.imageCoordToCanvasCoord(this.finalOffsetX, this.finalOffsetY);
         this.drawSelectionBox(boundaryX, boundaryY, this.realWidth * this.zoomLevel, this.realHeight * this.zoomLevel, this.boundaryColor, 16 * this.zoomLevel, 0);
@@ -1619,7 +1875,7 @@ class ImageEditor {
 
     getMaximumImageData(format = 'image/png') {
         let canvas = document.createElement('canvas');
-        let width = this.realWidth, height = this.realHeight;
+        let maxX = this.realWidth, maxY = this.realHeight;
         let minX = 0, minY = 0;
         for (let layer of this.layers) {
             if (!layer.isMask) {
@@ -1627,16 +1883,16 @@ class ImageEditor {
                 let [w, h] = [layer.width, layer.height];
                 minX = Math.min(minX, x);
                 minY = Math.min(minY, y);
-                width = Math.max(width, x + w);
-                height = Math.max(height, y + h);
+                maxX = Math.max(maxX, x + w);
+                maxY = Math.max(maxY, y + h);
             }
         }
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = maxX - minX;
+        canvas.height = maxY - minY;
         let ctx = canvas.getContext('2d');
         for (let layer of this.layers) {
             if (!layer.isMask) {
-                layer.drawToBack(ctx, minX, minY, 1);
+                layer.drawToBack(ctx, -minX, -minY, 1);
             }
         }
         return canvas.toDataURL(format);
@@ -1678,6 +1934,15 @@ class ImageEditor {
                 }
             }
         }
-        return canvas.toDataURL(format);
+        // Force to black/white
+        let canvas2 = document.createElement('canvas');
+        canvas2.width = this.realWidth;
+        canvas2.height = this.realHeight;
+        let ctx2 = canvas2.getContext('2d');
+        ctx2.fillStyle = '#000000';
+        ctx2.fillRect(0, 0, canvas2.width, canvas2.height);
+        ctx2.globalCompositeOperation = 'luminosity';
+        ctx2.drawImage(canvas, 0, 0);
+        return canvas2.toDataURL(format);
     }
 }

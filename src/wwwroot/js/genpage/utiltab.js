@@ -58,7 +58,7 @@ function pickle2safetensor_load(mapping = null) {
     }
     for (let type of ['Stable-Diffusion', 'LoRA', 'VAE', 'Embedding', 'ControlNet']) {
         let modelSet = mapping[type];
-        let count = modelSet.filter(x => !x.startsWith("backup") && !x.endsWith('.safetensors') && !x.endsWith('.engine')).length;
+        let count = modelSet.filter(x => !x.startsWith("backup") && x != "(None)" && !nativelySupportedModelExtensions.includes(x.split('.').pop())).length;
         let counter = getRequiredElementById(`pickle2safetensor_${type.toLowerCase()}_count`);
         counter.innerText = count;
         let button = getRequiredElementById(`pickle2safetensor_${type.toLowerCase()}_button`);
@@ -135,6 +135,9 @@ class LoraExtractorUtil {
         if (outName.endsWith('.safetensors')) {
             outName = outName.substring(0, outName.length - '.safetensors'.length);
         }
+        if (outName.endsWith('.sft')) {
+            outName = outName.substring(0, outName.length - '.sft'.length);
+        }
         if (outName.endsWith('.ckpt')) {
             outName = outName.substring(0, outName.length - '.ckpt'.length);
         }
@@ -180,13 +183,50 @@ class ModelDownloaderUtil {
         this.name = getRequiredElementById('model_downloader_name');
         this.button = getRequiredElementById('model_downloader_button');
         this.metadataZone = getRequiredElementById('model_downloader_metadatazone');
+        this.imageSide = getRequiredElementById('model_downloader_imageside');
         this.activeZone = getRequiredElementById('model_downloader_right_sidebar');
+        this.folders = getRequiredElementById('model_downloader_folder');
         this.hfPrefix = 'https://huggingface.co/';
         this.civitPrefix = 'https://civitai.com/';
     }
 
+    reloadFolders() {
+        if (!coreModelMap) {
+            return;
+        }
+        let selected = this.folders.value;
+        let html = '<option>(None)</option>';
+        let folderList = [];
+        for (let submap of Object.values(coreModelMap)) {
+            for (let model of submap) {
+                let parts = model.split('/');
+                if (parts.length == 1) {
+                    continue;
+                }
+                if (folderList.includes(parts.slice(0, -1).join('/'))) {
+                    continue;
+                }
+                for (let i = 1; i < parts.length; i++) {
+                    let folder = parts.slice(0, i).join('/');
+                    if (!folderList.includes(folder)) {
+                        folderList.push(folder);
+                    }
+                }
+            }
+        }
+        folderList.sort();
+        for (let folder of folderList) {
+            html += `<option>${folder}</option>\n`;
+        }
+        this.folders.innerHTML = html;
+        this.folders.value = selected || '(None)';
+    }
+
     getCivitaiMetadata(id, versId, callback) {
         getJsonDirect(`${this.civitPrefix}api/v1/models/${id}`, (status, rawData) => {
+            let doError = () => {
+                callback(null, null, null, null, null, null);
+            }
             let modelType = null;
             let metadata = null;
             let rawVersion = rawData.modelVersions[0];
@@ -201,6 +241,11 @@ class ModelDownloaderUtil {
                         }
                     }
                 }
+            }
+            if (!file.name.endsWith('.safetensors') && !file.name.endsWith('.sft')) {
+                console.log(`refuse civitai url because download url is ${file.downloadUrl}`);
+                doError();
+                return;
             }
             if (rawData.type == 'Checkpoint') { modelType = 'Stable-Diffusion'; }
             if (rawData.type == 'LORA') { modelType = 'LoRA'; }
@@ -233,7 +278,7 @@ class ModelDownloaderUtil {
                 applyMetadata('');
             }
         }, (status, data) => {
-            callback(null, null, null, null, null, null);
+            doError();
         });
     }
 
@@ -279,7 +324,7 @@ class ModelDownloaderUtil {
                 parts[4] = parts[4].substring(0, parts[4].length - '?download=true'.length);
                 this.url.value = `${this.hfPrefix}${parts.join('/')}`;
             }
-            if (!parts[4].endsWith('.safetensors')) {
+            if (!parts[4].endsWith('.safetensors') && !parts[4].endsWith('.sft')) {
                 this.urlStatusArea.innerText = "URL appears to be a huggingface link, but not a safetensors file. Only safetensors can be auto-downloaded.";
                 this.button.disabled = false;
                 return;
@@ -289,14 +334,14 @@ class ModelDownloaderUtil {
                 this.url.value = `${this.hfPrefix}${parts.join('/')}`;
                 this.urlStatusArea.innerText = "URL appears to be a huggingface link, and has been autocorrected to a download link.";
                 this.button.disabled = false;
-                this.name.value = parts.slice(4).join('/').replaceAll('.safetensors', '');
+                this.name.value = parts.slice(4).join('/').replaceAll('.safetensors', '').replaceAll('.sft', '');
                 this.nameInput();
                 return;
             }
             if (parts[2] == 'resolve') {
                 this.urlStatusArea.innerText = "URL appears to be a valid HuggingFace download link.";
                 this.button.disabled = false;
-                this.name.value = parts.slice(4).join('/').replaceAll('.safetensors', '');
+                this.name.value = parts.slice(4).join('/').replaceAll('.safetensors', '').replaceAll('.sft', '');
                 this.nameInput();
                 return;
             }
@@ -325,7 +370,7 @@ class ModelDownloaderUtil {
                         this.type.value = modelType;
                     }
                     this.urlStatusArea.innerText = "URL appears to be a CivitAI link, and has been loaded from Civitai API.";
-                    this.name.value = `${rawData.name} - ${rawVersion.name}`;
+                    this.name.value = `${rawData.name} - ${rawVersion.name}`.replaceAll(/[\|\\\/\:\*\?\"\<\>\|\,\.\&\!\[\]\(\)]/g, '-');
                     this.nameInput();
                     this.metadataZone.innerHTML = `
                         Found civitai metadata for model ID ${escapeHtml(id)} version id ${escapeHtml(versId)}:
@@ -333,16 +378,17 @@ class ModelDownloaderUtil {
                         <br><b>Version title</b>: ${escapeHtml(rawVersion.name)}
                         <br><b>Base model</b>: ${escapeHtml(rawVersion.baseModel)}
                         <br><b>Date</b>: ${escapeHtml(rawVersion.createdAt)}`
-                        + (img ? `<br><b>Thumbnail</b>:<br> <img src="${img}" style="max-width: 100%; max-height: 100%;">` : '')
                         + `<br><b>Model description</b>: ${safeHtmlOnly(rawData.description)}`
                         + (rawVersion.description ? `<br><b>Version description</b>: ${safeHtmlOnly(rawVersion.description)}` : '')
                         + (rawVersion.trainedWords ? `<br><b>Trained words</b>: ${escapeHtml(rawVersion.trainedWords.join(", "))}` : '');
                     this.metadataZone.dataset.raw = `${JSON.stringify(metadata, null, 2)}`;
                     if (img) {
                         this.metadataZone.dataset.image = img;
+                        this.imageSide.innerHTML = `<img src="${img}"/>`;
                     }
                     else {
                         delete this.metadataZone.dataset.image;
+                        this.imageSide.innerHTML = ``;
                     }
                 });
             }
@@ -379,6 +425,7 @@ class ModelDownloaderUtil {
         else {
             this.metadataZone.innerHTML = '';
             this.metadataZone.dataset.raw = '';
+            this.imageSide.innerHTML = '';
         }
         if (url.trim() == '') {
             this.urlStatusArea.innerText = "(...)";
@@ -416,7 +463,8 @@ class ModelDownloaderUtil {
 
     run() {
         this.button.disabled = true;
-        let download = new ActiveModelDownload(this, this.name.value, this.url.value, this.metadataZone.dataset.image, this.type.value, this.metadataZone.dataset.raw || '');
+        let name = this.folders.value == '(None)' ? this.name.value : this.folders.value + '/' + this.name.value;
+        let download = new ActiveModelDownload(this, name, this.url.value, this.metadataZone.dataset.image, this.type.value, this.metadataZone.dataset.raw || '');
         download.download();
     }
 }

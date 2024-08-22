@@ -8,6 +8,7 @@ using SwarmUI.Core;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
 
 namespace SwarmUI.WebAPI;
@@ -21,6 +22,7 @@ public static class AdminAPI
         API.RegisterAPICall(ChangeServerSettings, true);
         API.RegisterAPICall(ListLogTypes);
         API.RegisterAPICall(ListRecentLogMessages);
+        API.RegisterAPICall(LogSubmitToPastebin, true);
         API.RegisterAPICall(ShutdownServer, true);
         API.RegisterAPICall(GetServerResourceInfo);
         API.RegisterAPICall(DebugLanguageAdd, true);
@@ -98,6 +100,7 @@ public static class AdminAPI
     public static async Task<JObject> ChangeServerSettings(Session session,
         [API.APIParameter("Dynamic input of `\"settingname\": valuehere`.")] JObject rawData)
     {
+        FDSSection origPaths = Program.ServerSettings.Paths.Save(true);
         JObject settings = (JObject)rawData["settings"];
         List<string> changed = [];
         foreach ((string key, JToken val) in settings)
@@ -126,6 +129,26 @@ public static class AdminAPI
         Program.SaveSettingsFile();
         if (settings.Properties().Any(p => p.Name.StartsWith("paths.")))
         {
+            string[] paths =
+            [
+                Program.ServerSettings.Paths.SDModelFolder, Program.ServerSettings.Paths.SDVAEFolder,
+                Program.ServerSettings.Paths.SDLoraFolder, Program.ServerSettings.Paths.SDControlNetsFolder,
+                Program.ServerSettings.Paths.SDClipVisionFolder
+            ];
+            try
+            {
+                foreach (string path in paths)
+                {
+                    Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, path));
+                }
+            }
+            catch (Exception e)
+            {
+                Logs.Error($"Failed to create one or more directories: {e.Message}");
+                Program.ServerSettings.Paths.Load(origPaths);
+                Program.SaveSettingsFile();
+                return new JObject() { ["error"] = "Model paths settings are invalid, rejected change." };
+            }
             Program.BuildModelLists();
             Program.RefreshAllModelSets();
             Program.ModelPathsChangedEvent?.Invoke();
@@ -223,6 +246,59 @@ public static class AdminAPI
         }
         result["data"] = messageData;
         return result;
+    }
+
+    [API.APIDescription("Submits current server log info to a pastebin service automatically.",
+        """
+          "url": "a url to the paste here"
+        """)]
+    public static async Task<JObject> LogSubmitToPastebin(Session session,
+        [API.APIParameter("The minimum log level (verbose, debug, info) to include.")] string type)
+    {
+        if (!Enum.TryParse(type, true, out Logs.LogLevel level))
+        {
+            return new JObject() { ["error"] = "Invalid log level type specified." };
+        }
+        Logs.Info($"User {session.User.UserID} is submitted logs above level {level} to pastebin...");
+        List<(Logs.LogLevel, Logs.LogMessage)> messages = [];
+        for (int i = (int)level; i < Logs.Trackers.Length; i++)
+        {
+            messages.AddRange(Logs.Trackers[i].Messages.Select(m => ((Logs.LogLevel)i, m)));
+        }
+        messages.Sort((m1, m2) => m1.Item2.Sequence.CompareTo(m2.Item2.Sequence));
+        StringBuilder rawLogText = new();
+        foreach ((Logs.LogLevel mLevel, Logs.LogMessage message) in messages)
+        {
+            rawLogText.Append($"{message.Time:yyyy-MM-dd HH:mm:ss.fff} [{mLevel}] {message.Message}\n");
+        }
+        string logText = rawLogText.ToString();
+        if (logText.Length > 3 * 1024 * 1024)
+        {
+            logText = logText[0..(100 * 1024)] + "\n\n\n... (log too long, truncated) ..." + logText[^(2500 * 1024)..];
+        }
+        FormUrlEncodedContent content = new(new Dictionary<string, string>()
+        {
+            ["pastetype"] = "swarm",
+            ["pastetitle"] = $"SwarmUI v{Utilities.Version} Server Log - {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+            ["response"] = "micro",
+            ["v"] = "300",
+            ["pastecontents"] = logText
+        });
+        HttpResponseMessage response = await Utilities.UtilWebClient.PostAsync("https://paste.denizenscript.com/New/Swarm", content, Program.GlobalProgramCancel);
+        string responseString = await response.Content.ReadAsStringAsync();
+        responseString = responseString.Trim();
+        if (responseString.StartsWith("<!DOCTYPE html"))
+        {
+            responseString = responseString.Before('\n');
+            if (responseString.Length > 100)
+            {
+                responseString = responseString[0..100] + "...";
+            }
+            Logs.Error($"Failed to submit log to pastebin - server error: {responseString}");
+            return new JObject() { ["error"] = "Failed to submit log to pastebin - server error?" };
+        }
+        Logs.Info($"Log submitted to pastebin, URL: {responseString}");
+        return new JObject() { ["url"] = responseString };
     }
 
     [API.APIDescription("Shuts the server down. Returns success before the server is gone.", "\"success\": true")]

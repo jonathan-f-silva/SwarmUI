@@ -43,9 +43,18 @@ function comfyFixMenuLocation() {
     let bodyTop = frame.contentWindow.document.querySelector('.comfyui-body-top');
     let bodyTopMenu = bodyTop ? bodyTop.querySelector('.comfyui-menu') : null;
     if (bodyTopMenu) {
-        swarmComfyMenu.style.top = '3rem';
+        let logo = bodyTopMenu.querySelector('.comfyui-logo');
+        if (logo && !logo.parentElement.querySelector('.swarm-injected-header-spacer')) {
+            let space = document.createElement('span');
+            space.className = 'swarm-injected-header-spacer';
+            space.style.width = swarmComfyMenu.offsetWidth + 'px';
+            logo.parentElement.insertBefore(space, logo.nextSibling);
+        }
+        swarmComfyMenu.style.top = '0rem';
+        swarmComfyMenu.style.left = `81px`;
     }
     else {
+        swarmComfyMenu.style.left = undefined;
         swarmComfyMenu.style.top = '1rem';
         let menu = frame.contentWindow.document.querySelector('.comfy-menu');
         if (menu) {
@@ -199,7 +208,7 @@ function comfyGetPrompt(callback) {
  * Comfy has multiple different ways of listening to mouseups so aggressively trigger all of them. And manually force the LiteGraph handler to be safe.
  */
 function comfyAggressiveMouseUp() {
-    if (!hasComfyLoaded) {
+    if (!hasComfyLoaded || !comfyFrame().contentWindow || !comfyFrame().contentWindow.app) {
         return;
     }
     function sendUp(elem) {
@@ -233,6 +242,13 @@ document.addEventListener('mouseup', function (e) {
  */
 function comfyBuildParams(callback) {
     comfyGetPromptAndWorkflow((workflow, prompt) => {
+        function getFreeIdStartingAt(start) {
+            let id = start;
+            while (id in prompt) {
+                id++;
+            }
+            return id;
+        }
         let params = {};
         let inputPrefix = 'comfyrawworkflowinput';
         let idsUsed = [];
@@ -330,6 +346,7 @@ function comfyBuildParams(callback) {
             }
         }
         let hasSaves = false;
+        let saveNodeId = null;
         let previewNodes = [];
         for (let nodeId of Object.keys(prompt)) {
             let node = prompt[nodeId];
@@ -342,12 +359,15 @@ function comfyBuildParams(callback) {
                     node.class_type = 'SwarmSaveImageWS';
                     delete node.inputs['filename_prefix'];
                 }
+                saveNodeId = nodeId;
                 hasSaves = true;
             }
             else if (node.class_type == 'SwarmSaveImageWS') {
+                saveNodeId = nodeId;
                 hasSaves = true;
             }
             else if (comfyAltSaveNodes.includes(node.class_type)) {
+                saveNodeId = nodeId;
                 hasSaves = true;
             }
             if (node.inputs) {
@@ -369,8 +389,14 @@ function comfyBuildParams(callback) {
         }
         if (!hasSaves && previewNodes.length > 0) {
             prompt[previewNodes[0]].class_type = 'SwarmSaveImageWS';
+            saveNodeId = previewNodes[0];
             hasSaves = true;
             previewNodes = previewNodes.slice(1);
+        }
+        if (hasSaves && parseInt(saveNodeId) < 200) {
+            let newSaveId = getFreeIdStartingAt(200);
+            prompt[newSaveId] = prompt[saveNodeId];
+            delete prompt[saveNodeId];
         }
         for (let preview of previewNodes) {
             delete prompt[preview];
@@ -434,9 +460,10 @@ function comfyBuildParams(callback) {
                 let subtype = null;
                 let defaultVal = node.inputs['value'];
                 let values = null;
+                let doFixMe = false;
                 switch (node.class_type) {
-                    case 'SwarmInputInteger': type = 'integer'; break;
-                    case 'SwarmInputFloat': type = 'decimal'; break;
+                    case 'SwarmInputInteger': type = 'integer'; doFixMe = true; break;
+                    case 'SwarmInputFloat': type = 'decimal'; doFixMe = true; break;
                     case 'SwarmInputText': type = 'text'; break;
                     case 'SwarmInputModelName':
                         type = 'model';
@@ -467,7 +494,7 @@ function comfyBuildParams(callback) {
                             }
                         }
                     break;
-                    case 'SwarmInputBoolean': type = 'boolean'; break;
+                    case 'SwarmInputBoolean': type = 'boolean'; doFixMe = true; break;
                     case 'SwarmInputImage': type = 'image'; break;
                     default: throw new Error(`Unknown SwarmInput type ${node.class_type}`);
                 }
@@ -517,7 +544,12 @@ function comfyBuildParams(callback) {
                     params[inputId].image_should_resize = node.inputs['auto_resize'];
                     params[inputId].image_always_b64 = true;
                 }
-                node.inputs['value'] = "${" + inputId + ":" + `${node.inputs['value']}`.replaceAll('${', '(').replaceAll('}', ')') + "}";
+                if (doFixMe) {
+                    node.inputs['value'] = "%%_COMFYFIXME_${" + inputId + ":" + `${node.inputs['value']}`.replaceAll('${', '(').replaceAll('}', ')') + "}_ENDFIXME_%%";
+                }
+                else {
+                    node.inputs['value'] = "${" + inputId + ":" + `${node.inputs['value']}`.replaceAll('${', '(').replaceAll('}', ')') + "}";
+                }
             }
             function injectType(id, type) {
                 if (id.startsWith(inputPrefix)) {
@@ -932,6 +964,7 @@ function comfyNoticeMessage(message) {
  */
 function comfySaveWorkflowNow() {
     comfyReconfigureQuickload();
+    getRequiredElementById('comfy_save_modal_replace').value = '';
     let curImg = document.getElementById('current_image_img');
     let enableImage = getRequiredElementById('comfy_save_use_image');
     let saveImageSection = getRequiredElementById('comfy_save_image');
@@ -1021,7 +1054,8 @@ function comfySaveModalSaveNow() {
             'prompt': prompt_text,
             'custom_params': params,
             'param_values': paramVal,
-            'image': image
+            'image': image,
+            'replace': getRequiredElementById('comfy_save_modal_replace').value
         };
         genericRequest('ComfySaveWorkflow', inputs, (data) => {
             comfyNoticeMessage("Saved!");
@@ -1035,6 +1069,7 @@ function comfySaveModalSaveNow() {
 
 /** Cancel button in the Save modal. */
 function comfyHideSaveModal() {
+    getRequiredElementById('comfy_save_modal_replace').value = '';
     $('#comfy_workflow_save_modal').modal('hide');
 }
 
@@ -1152,6 +1187,7 @@ function comfyDescribeWorkflowForBrowser(workflow) {
                 getRequiredElementById('comfy_save_description').value = workflow.data.description;
                 getRequiredElementById('comfy_save_enable_simple').checked = workflow.data.enable_in_simple;
                 comfySaveWorkflowNow();
+                getRequiredElementById('comfy_save_modal_replace').value = workflow.name;
             }
         },
         {
@@ -1173,8 +1209,8 @@ function comfySelectWorkflowForBrowser(workflow) {
 }
 
 let comfyWorkflowBrowser = new GenPageBrowserClass('comfy_workflow_browser_container', comfyListWorkflowsForBrowser, 'comfyworkflowbrowser', 'Small Thumbnails', comfyDescribeWorkflowForBrowser, comfySelectWorkflowForBrowser);
-comfyWorkflowBrowser.folderTreeVerticalSpacing = '9rem';
-comfyWorkflowBrowser.splitterMinWidth = 16 * 20;
+comfyWorkflowBrowser.folderTreeVerticalSpacing = '6rem';
+comfyWorkflowBrowser.splitterMinWidth = 375;
 
 /**
  * Called when the user wants to browse their workflows (via button press).

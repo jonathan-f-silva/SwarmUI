@@ -111,18 +111,7 @@ public class SwarmSwarmBackend : AbstractT2IBackend
         if (data.TryGetValue("error", out JToken error))
         {
             string err = error.ToString();
-            if (err.StartsWith("Invalid data: "))
-            {
-                throw new InvalidDataException(err["Invalid data: ".Length..]);
-            }
-            else if (err.StartsWith("Invalid operation: "))
-            {
-                throw new InvalidOperationException(err["Invalid operation: ".Length..]);
-            }
-            else
-            {
-                throw new InvalidDataException($"Remote swarm gave error: {err}");
-            }
+            throw new SwarmReadableErrorException($"Remote swarm gave error: {err}");
         }
     }
 
@@ -169,7 +158,7 @@ public class SwarmSwarmBackend : AbstractT2IBackend
                     {
                         try
                         {
-                            JObject modelsData = await HttpClient.PostJson($"{Address}/API/ListModels", new() { ["session_id"] = Session, ["path"] = "", ["depth"] = 999, ["subtype"] = runType }, RequestAdapter());
+                            JObject modelsData = await HttpClient.PostJson($"{Address}/API/ListModels", new() { ["session_id"] = Session, ["path"] = "", ["depth"] = 999, ["subtype"] = runType, ["allowRemote"] = Settings.AllowForwarding }, RequestAdapter());
                             JToken[] remoteModels = [.. modelsData["files"]];
                             if (fullLoad)
                             {

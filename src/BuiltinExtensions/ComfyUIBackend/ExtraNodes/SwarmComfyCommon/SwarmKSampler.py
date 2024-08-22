@@ -226,10 +226,12 @@ class SwarmKSampler:
     CATEGORY = "SwarmUI/sampling"
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "run_sampling"
+    DESCRIPTION = "Works like a vanilla Comfy KSamplerAdvanced, but with extra inputs for advanced features such as sigma scale, tiling, previews, etc."
 
     def sample(self, model, noise_seed, steps, cfg, sampler_name, scheduler, positive, negative, latent_image, start_at_step, end_at_step, var_seed, var_seed_strength, sigma_max, sigma_min, rho, add_noise, return_with_leftover_noise, previews):
         device = comfy.model_management.get_torch_device()
         latent_samples = latent_image["samples"]
+        latent_samples = comfy.sample.fix_empty_latent_channels(model, latent_samples)
         disable_noise = add_noise == "disable"
 
         if disable_noise:
@@ -267,13 +269,14 @@ class SwarmKSampler:
                 sigmas = calculate_sigmas_scheduler(real_model, scheduler, steps, sigma_min, sigma_max, rho)
             sigmas = sigmas.to(device)
         
-        callback = make_swarm_sampler_callback(steps, device, model, previews)
-
-        samples = comfy.sample.sample(model, noise, steps, cfg, sampler_name, scheduler, positive, negative, latent_samples,
-                                denoise=1.0, disable_noise=disable_noise, start_step=start_at_step, last_step=end_at_step,
-                                force_full_denoise=return_with_leftover_noise == "disable", noise_mask=noise_mask, sigmas=sigmas, callback=callback, seed=noise_seed)
         out = latent_image.copy()
-        out["samples"] = samples
+        if steps > 0:
+            callback = make_swarm_sampler_callback(steps, device, model, previews)
+
+            samples = comfy.sample.sample(model, noise, steps, cfg, sampler_name, scheduler, positive, negative, latent_samples,
+                                    denoise=1.0, disable_noise=disable_noise, start_step=start_at_step, last_step=end_at_step,
+                                    force_full_denoise=return_with_leftover_noise == "disable", noise_mask=noise_mask, sigmas=sigmas, callback=callback, seed=noise_seed)
+            out["samples"] = samples
         return (out, )
     
     # tiled sample version of sample function

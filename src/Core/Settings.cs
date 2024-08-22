@@ -72,6 +72,9 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("The path for where to store log file, parsed at time of program start, relative to the Data directory.\nMust restart Swarm to apply.\nCan use [year], [month], [month_name], [day], [day_name], [hour], [minute], [second], [pid].")]
         public string LogsPath = "Logs/[year]-[month]/[day]-[hour]-[minute].log";
+
+        [ConfigComment("How long (in minutes) the console may be idle for before the next message should have a full date/time stamp shown in it.\nThis is for Swarm instances that are left open for long times, to make gaps in usage clearer.\nThis will not show at all in Swarm is used consistently smaller than this duration.\nSet to 9999999 to disable this behavior.\nDefaults to 10 minutes.")]
+        public double RepeatTimestampAfterMinutes = 10;
     }
 
     /// <summary>Settings related to server performance.</summary>
@@ -311,6 +314,10 @@ public class Settings : AutoConfiguration
             [ConfigComment("What VAE to use with SVD (Video) models by default. Use 'None' to use the one in the model. This should normally be an SDv1 VAE.")]
             [ManualSettingsOptions(Impl = null, Vals = ["None"])]
             public string DefaultSVDVAE = "None";
+
+            [ConfigComment("What VAE to use with Flux models by default.")]
+            [ManualSettingsOptions(Impl = null, Vals = ["None"])]
+            public string DefaultFluxVAE = "None";
         }
 
         [ConfigComment("Options to override default VAEs with.")]
@@ -333,6 +340,9 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("Delay, in seconds, betweeen Generate Forever updates.\nIf the delay hits and a generation is still waiting, it will be skipped.\nDefault is 0.1 seconds.")]
         public double GenerateForeverDelay = 0.1;
+
+        [ConfigComment("Number of generations that Generate Forever should always keep queued up when enabled.\nUseful when using multiple backends to keep them all busy.")]
+        public int GenerateForeverQueueSize = 1;
 
         public class LanguagesImpl : SettingsOptionsAttribute.AbstractImpl
         {
@@ -410,9 +420,11 @@ public class ManualSettingsOptionsAttribute : SettingsOptionsAttribute
 {
     public string[] Vals;
 
+    public string[] ManualNames;
+
     public override string[] Options => Vals;
 
-    public override string[] Names => Vals;
+    public override string[] Names => ManualNames ?? Vals;
 }
 
 /// <summary>Attribute that marks that the value should be treated as a secret, and not transmitted to remote clients.</summary>

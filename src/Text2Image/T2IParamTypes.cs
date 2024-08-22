@@ -101,6 +101,14 @@ public record class T2IParamType(string Name, string Description, string Default
 {
     public JObject ToNet(Session session)
     {
+        JToken values = null;
+        JToken valueNames = null;
+        if (GetValues is not null)
+        {
+            List<string> rawVals = GetValues(session);
+            values = JArray.FromObject(rawVals.Select(v => v.Before("///")).ToList());
+            valueNames = JArray.FromObject(rawVals.Select(v => v.After("///")).ToList());
+        }
         return new JObject()
         {
             ["name"] = Name,
@@ -114,7 +122,8 @@ public record class T2IParamType(string Name, string Description, string Default
             ["view_min"] = ViewMin,
             ["view_max"] = ViewMax,
             ["step"] = Step,
-            ["values"] = GetValues == null ? null : JToken.FromObject(GetValues(session)),
+            ["values"] = values,
+            ["value_names"] = valueNames,
             ["examples"] = Examples == null ? null : JToken.FromObject(Examples),
             ["visible"] = VisibleNormally,
             ["advanced"] = IsAdvanced,
@@ -271,10 +280,10 @@ public class T2IParamTypes
     }
 
     public static T2IRegisteredParam<string> Prompt, NegativePrompt, AspectRatio, BackendType, RefinerMethod, FreeUApplyTo, FreeUVersion, PersonalNote, VideoFormat, VideoResolution, UnsamplerPrompt, ImageFormat, MaskBehavior, RawResolution, SeamlessTileable, SD3TextEncs;
-    public static T2IRegisteredParam<int> Images, Steps, Width, Height, BatchSize, ExactBackendID, VAETileSize, ClipStopAtLayer, VideoFrames, VideoMotionBucket, VideoFPS, VideoSteps, RefinerSteps, CascadeLatentCompression, MaskShrinkGrow, MaskBlur, SegmentMaskBlur, SegmentMaskGrow;
+    public static T2IRegisteredParam<int> Images, Steps, Width, Height, BatchSize, ExactBackendID, VAETileSize, ClipStopAtLayer, VideoFrames, VideoMotionBucket, VideoFPS, VideoSteps, RefinerSteps, CascadeLatentCompression, MaskShrinkGrow, MaskBlur, MaskGrow, SegmentMaskBlur, SegmentMaskGrow;
     public static T2IRegisteredParam<long> Seed, VariationSeed, WildcardSeed;
-    public static T2IRegisteredParam<double> CFGScale, VariationSeedStrength, InitImageCreativity, InitImageResetToNorm, RefinerControl, RefinerUpscale, ReVisionStrength, AltResolutionHeightMult,
-        FreeUBlock1, FreeUBlock2, FreeUSkip1, FreeUSkip2, GlobalRegionFactor, EndStepsEarly, SamplerSigmaMin, SamplerSigmaMax, SamplerRho, VideoAugmentationLevel, VideoCFG, VideoMinCFG, IP2PCFG2, RegionalObjectCleanupFactor, SigmaShift, SegmentThresholdMax;
+    public static T2IRegisteredParam<double> CFGScale, VariationSeedStrength, InitImageCreativity, InitImageResetToNorm, RefinerControl, RefinerUpscale, RefinerCFGScale, ReVisionStrength, AltResolutionHeightMult,
+        FreeUBlock1, FreeUBlock2, FreeUSkip1, FreeUSkip2, GlobalRegionFactor, EndStepsEarly, SamplerSigmaMin, SamplerSigmaMax, SamplerRho, VideoAugmentationLevel, VideoCFG, VideoMinCFG, IP2PCFG2, RegionalObjectCleanupFactor, SigmaShift, SegmentThresholdMax, FluxGuidanceScale;
     public static T2IRegisteredParam<Image> InitImage, MaskImage;
     public static T2IRegisteredParam<T2IModel> Model, RefinerModel, VAE, ReVisionModel, RegionalObjectInpaintingModel, SegmentModel, VideoModel, RefinerVAE;
     public static T2IRegisteredParam<List<string>> Loras, LoraWeights, LoraSectionConfinement;
@@ -336,7 +345,7 @@ public class T2IParamTypes
             "-1", Min: -1, Max: long.MaxValue, Step: 1, Examples: ["1", "2", "...", "10"], OrderPriority: -30, ViewType: ParamViewType.SEED, Group: GroupCore, ChangeWeight: -5
             ));
         Steps = Register<int>(new("Steps", "How many times to run the model.\nMore steps = better quality, but more time.\n20 is a good baseline for speed, 40 is good for maximizing quality.\nYou can go much higher, but it quickly becomes pointless above 70 or so.",
-            "20", Min: 0, Max: 200, ViewMax: 100, Step: 1, Examples: ["10", "15", "20", "30", "40"], OrderPriority: -20, Group: GroupCore, ViewType: ParamViewType.SLIDER
+            "20", Min: 0, Max: 500, ViewMax: 100, Step: 1, Examples: ["10", "15", "20", "30", "40"], OrderPriority: -20, Group: GroupCore, ViewType: ParamViewType.SLIDER
             ));
         CFGScale = Register<double>(new("CFG Scale", "How strongly to scale prompt input.\nHigher CFG scales tend to produce more contrast, and lower CFG scales produce less contrast.\n"
             + "Too-high values can cause corrupted/burnt images, too-low can cause nonsensical images.\n7 is a good baseline. Normal usages vary between 4 and 9.\nSome model types, such as Turbo, expect CFG around 1.",
@@ -351,7 +360,7 @@ public class T2IParamTypes
             ));
         GroupResolution = new("Resolution", Toggles: false, Open: false, OrderPriority: -11);
         AspectRatio = Register<string>(new("Aspect Ratio", "Image aspect ratio. Some models can stretch better than others.",
-            "1:1", GetValues: (_) => ["1:1", "4:3", "3:2", "8:5", "16:9", "21:9", "3:4", "2:3", "5:8", "9:16", "9:21", "Custom"], OrderPriority: -11, Group: GroupResolution
+            "1:1", GetValues: (_) => ["1:1///1:1 (Square)", "4:3///4:3 (Old PC)", "3:2///3:2 (Semi-wide)", "8:5///8:5", "16:9///16:9 (Standard Widescreen)", "21:9///21:9 (Ultra-Widescreen)", "3:4///3:4", "2:3///2:3 (Semi-tall)", "5:8///5:8", "9:16///9:16 (Tall)", "9:21///9:21 (Ultra-Tall)", "Custom"], OrderPriority: -11, Group: GroupResolution
             ));
         Width = Register<int>(new("Width", "Image width, in pixels.\nSDv1 uses 512, SDv2 uses 768, SDXL prefers 1024.\nSome models allow variation within a range (eg 512 to 768) but almost always want a multiple of 64.",
             "512", Min: 64, ViewMin: 256, Max: 16384, ViewMax: 2048, Step: 32, Examples: ["512", "768", "1024"], OrderPriority: -10, ViewType: ParamViewType.POT_SLIDER, Group: GroupResolution
@@ -362,6 +371,9 @@ public class T2IParamTypes
         GroupSampling = new("Sampling", Toggles: false, Open: false, OrderPriority: -8);
         SD3TextEncs = Register<string>(new("SD3 TextEncs", "Which text encoders to use for Stable Diffusion 3 (SD3) models.\nCan use CLIP pairs, or T5, or both.\nBoth is the standard way to run SD3, but CLIP only uses fewer system resources.",
             "CLIP Only", GetValues: _ => ["CLIP Only", "T5 Only", "CLIP + T5"], Toggleable: true, Group: GroupSampling, FeatureFlag: "sd3", OrderPriority: 5, ChangeWeight: 9
+            ));
+        FluxGuidanceScale = Register<double>(new("Flux Guidance Scale", "What guidance scale to use for Flux-Dev models.\nDoes not apply to Flux-Schnell.\nThis is a distilled embedded value the model was trained on, this is based on an alternative guidance methodology, and is not CFG.\n3.5 is default, but closer to 2.0 may allow for more stylistic flexibility.",
+            "3.5", Min: 0, Max: 100, ViewMax: 10, Step: 0.1, Toggleable: true, IsAdvanced: true, Group: GroupSampling, ViewType: ParamViewType.SLIDER, FeatureFlag: "flux-dev"
             ));
         ZeroNegative = Register<bool>(new("Zero Negative", "Zeroes the negative prompt if it's empty.\nDoes nothing if the negative prompt is not empty.\nThis may yield better quality on SD3.",
             "false", IgnoreIf: "false", Group: GroupSampling
@@ -387,6 +399,9 @@ public class T2IParamTypes
             ));
         MaskBlur = Register<int>(new("Mask Blur", "If enabled, the mask will be blurred by this blur factor.\nThis makes the transition for the new image smoother.\nSet to 0 to disable.",
             "4", IgnoreIf: "0", Min: 0, Max: 64, OrderPriority: -3.6, Group: GroupInitImage, Examples: ["0", "4", "8", "16"]
+            ));
+        MaskGrow = Register<int>(new("Mask Grow", "If enabled, the mask will be grown by this size (approx equivalent to length in pixels).\nThis helps improve overlap with generated masks.\nSet to 0 to disable.",
+            "0", IgnoreIf: "0", Min: 0, Max: 256, OrderPriority: -3.5, Group: GroupInitImage, Examples: ["0", "4", "8", "16"], IsAdvanced: true
             ));
         MaskBehavior = Register<string>(new("Mask Behavior", "How to process the mask.\n'Differential' = 'Differential Diffusion' technique, wherein the mask values are used as offsets for timestep of when to apply the mask or not.\n'Simple Latent' = the most basic latent masking technique.",
             "Differential", Toggleable: true, IsAdvanced: true, GetValues: (_) => ["Differential", "Simple Latent"], OrderPriority: -3.5, Group: GroupInitImage
@@ -420,8 +435,12 @@ public class T2IParamTypes
         RefinerSteps = Register<int>(new("Refiner Steps", "Alternate Steps value for the refiner stage.",
             "20", Min: 1, Max: 200, ViewMax: 100, Step: 1, Examples: ["10", "15", "20", "30", "40"], OrderPriority: -3.75, Toggleable: true, IsAdvanced: true, Group: GroupRefiners, ViewType: ParamViewType.SLIDER
             ));
+        RefinerCFGScale = Register<double>(new("Refiner CFG Scale", "For the refiner model independently of the base model, how strongly to scale prompt input.\nHigher CFG scales tend to produce more contrast, and lower CFG scales produce less contrast.\n"
+            + "Too-high values can cause corrupted/burnt images, too-low can cause nonsensical images.\n7 is a good baseline. Normal usages vary between 4 and 9.\nSome model types, such as Turbo, expect CFG around 1.",
+            "7", Min: 0, Max: 100, ViewMax: 20, Step: 0.5, Examples: ["5", "6", "7", "8", "9"], OrderPriority: -3.5, ViewType: ParamViewType.SLIDER, Group: GroupRefiners, ChangeWeight: -3, Toggleable: true, IsAdvanced: true
+            ));
         RefinerMethod = Register<string>(new("Refiner Method", "How to apply the refiner. Different methods create different results.\n'PostApply' runs the base in full, then runs the refiner with an Init Image.\n'StepSwap' swaps the model after x steps during generation.\n'StepSwapNoisy' is StepSwap but with first-stage noise only.",
-            "PostApply", GetValues: (_) => ["PostApply", "StepSwap", "StepSwapNoisy"], OrderPriority: -3, Group: GroupRefiners, FeatureFlag: "refiners", DoNotPreview: true, IsAdvanced: true
+            "PostApply", GetValues: (_) => ["PostApply///Post-Apply (Normal)", "StepSwap///Step-Swap (SDXL Refiner Model Original)", "StepSwapNoisy///Step-Swap Noisy (Modified Refiner)"], OrderPriority: -3, Group: GroupRefiners, FeatureFlag: "refiners", DoNotPreview: true, IsAdvanced: true
             ));
         RefinerUpscale = Register<double>(new("Refiner Upscale", "Optional upscale of the image between the base and refiner stage.\nSometimes referred to as 'high-res fix'.\nSetting to '1' disables the upscale.",
             "1", IgnoreIf: "1", Min: 0.25, Max: 8, ViewMax: 4, Step: 0.25, OrderPriority: -2, ViewType: ParamViewType.SLIDER, Group: GroupRefiners, FeatureFlag: "refiners", DoNotPreview: true, Examples: ["1", "1.5", "2"]
@@ -531,7 +550,7 @@ public class T2IParamTypes
             "false", IgnoreIf: "false", IsAdvanced: true, Group: GroupSwarmInternal, AlwaysRetain: true, OrderPriority: -14
             ));
         BackendType = Register<string>(new("[Internal] Backend Type", "Which SwarmUI backend type should be used for this request.",
-            "Any", IgnoreIf: "Any", GetValues: (_) => ["Any", .. Program.Backends.BackendTypes.Keys],
+            "Any", IgnoreIf: "Any", GetValues: (_) => ["Any", .. Program.Backends.BackendTypes.Values.Select(b => $"{b.ID}///{b.Name}")],
             IsAdvanced: true, Permission: "param_backend_type", Group: GroupSwarmInternal, AlwaysRetain: true, OrderPriority: -10
             ));
         ExactBackendID = Register<int>(new("Exact Backend ID", "Manually force a specific exact backend (by ID #) to be used for this generation.",
@@ -551,7 +570,7 @@ public class T2IParamTypes
                 int height = int.Parse(heightText.Trim());
                 if (width < 64 || height < 64 || width > 16384 || height > 16384)
                 {
-                    throw new InvalidDataException($"Invalid resolution: {width}x{height} (must be between 64x64 and 16384x16384)");
+                    throw new SwarmUserErrorException($"Invalid resolution: {width}x{height} (must be between 64x64 and 16384x16384)");
                 }
                 return s;
             }
@@ -622,7 +641,7 @@ public class T2IParamTypes
         SamplerSigmaMax = Register<double>(new("Sampler Sigma Max", "Maximum sigma value for the sampler.\nOnly applies to Karras/Exponential schedulers.",
             "10", Min: 0, Max: 1000, Step: 0.01, Toggleable: true, IsAdvanced: true, Group: GroupAdvancedSampling, FeatureFlag: "sd3"
             ));
-        SigmaShift = Register<double>(new("Sigma Shift", "Sigma shift is used for MMDiT models (like SD3) specifically.\nFor SD3, this value is recommended to be in the range of 1.5 to 3, normally 3.\nFor AuraFlow, 1.73 (square root of 3) is recommended.",
+        SigmaShift = Register<double>(new("Sigma Shift", "Sigma shift is used for MMDiT models (like SD3) specifically.\nFor SD3, this value is recommended to be in the range of 1.5 to 3, normally 3.\nFor AuraFlow, 1.73 (square root of 3) is recommended.\nFor Flux, Schnell uses 0, 1.15 may be good for Dev.",
             "3", Min: 0, Max: 100, Step: 0.01, Toggleable: true, IsAdvanced: true, Group: GroupAdvancedSampling
             ));
         SamplerRho = Register<double>(new("Sampler Rho", "Rho value for the sampler.\nOnly applies to Karras/Exponential schedulers.",
@@ -680,39 +699,39 @@ public class T2IParamTypes
     /// <summary>Quick hex validator.</summary>
     public static AsciiMatcher ValidBase64Matcher = new(AsciiMatcher.BothCaseLetters + AsciiMatcher.Digits + "+/=");
 
-    /// <summary>Converts a parameter value in a valid input for that parameter, or throws <see cref="InvalidDataException"/> if it can't.</summary>
+    /// <summary>Converts a parameter value in a valid input for that parameter, or throws <see cref="SwarmReadableErrorException"/> if it can't.</summary>
     public static string ValidateParam(T2IParamType type, string val, Session session)
     {
         string origVal = val;
         if (type is null)
         {
-            throw new InvalidDataException("Unknown parameter type");
+            throw new SwarmUserErrorException("Unknown parameter type");
         }
         switch (type.Type)
         {
             case T2IParamDataType.INTEGER:
                 if (!long.TryParse(val, out long valInt))
                 {
-                    throw new InvalidDataException($"Invalid integer value for param {type.Name} - '{origVal}' - must be a valid integer (eg '0', '3', '-5', etc)");
+                    throw new SwarmUserErrorException($"Invalid integer value for param {type.Name} - '{origVal}' - must be a valid integer (eg '0', '3', '-5', etc)");
                 }
                 if (type.Min != 0 || type.Max != 0)
                 {
                     if (valInt < type.Min || valInt > type.Max)
                     {
-                        throw new InvalidDataException($"Invalid integer value for param {type.Name} - '{origVal}' - must be between {type.Min} and {type.Max}");
+                        throw new SwarmUserErrorException($"Invalid integer value for param {type.Name} - '{origVal}' - must be between {type.Min} and {type.Max}");
                     }
                 }
                 return valInt.ToString();
             case T2IParamDataType.DECIMAL:
                 if (!double.TryParse(val, out double valDouble))
                 {
-                    throw new InvalidDataException($"Invalid decimal value for param {type.Name} - '{origVal}' - must be a valid decimal (eg '0.0', '3.5', '-5.2', etc)");
+                    throw new SwarmUserErrorException($"Invalid decimal value for param {type.Name} - '{origVal}' - must be a valid decimal (eg '0.0', '3.5', '-5.2', etc)");
                 }
                 if (type.Min != 0 || type.Max != 0)
                 {
                     if (valDouble < type.Min || valDouble > type.Max)
                     {
-                        throw new InvalidDataException($"Invalid decimal value for param {type.Name} - '{origVal}' - must be between {type.Min} and {type.Max}");
+                        throw new SwarmUserErrorException($"Invalid decimal value for param {type.Name} - '{origVal}' - must be between {type.Min} and {type.Max}");
                     }
                 }
                 return valDouble.ToString();
@@ -720,17 +739,18 @@ public class T2IParamTypes
                 val = val.ToLowerFast();
                 if (val != "true" && val != "false")
                 {
-                    throw new InvalidDataException($"Invalid boolean value for param {type.Name} - '{origVal}' - must be exactly 'true' or 'false'");
+                    throw new SwarmUserErrorException($"Invalid boolean value for param {type.Name} - '{origVal}' - must be exactly 'true' or 'false'");
                 }
                 return val;
             case T2IParamDataType.TEXT:
             case T2IParamDataType.DROPDOWN:
                 if (type.GetValues is not null && type.ValidateValues)
                 {
-                    val = GetBestInList(val, type.GetValues(session));
+                    string[] rawVals = [.. type.GetValues(session).Select(v => v.Before("///"))];
+                    val = GetBestInList(val, rawVals);
                     if (val is null)
                     {
-                        throw new InvalidDataException($"Invalid value for param {type.Name} - '{origVal}' - must be one of: `{string.Join("`, `", type.GetValues(session))}`");
+                        throw new SwarmUserErrorException($"Invalid value for param {type.Name} - '{origVal}' - must be one of: `{string.Join("`, `", rawVals)}`");
                     }
                 }
                 return val;
@@ -738,7 +758,7 @@ public class T2IParamTypes
                 string[] vals = val.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 if (type.GetValues is not null && type.ValidateValues)
                 {
-                    List<string> possible = type.GetValues(session);
+                    string[] possible = [.. type.GetValues(session).Select(v => v.Before("///"))];
                     for (int i = 0; i < vals.Length; i++)
                     {
                         string search = vals[i];
@@ -748,14 +768,13 @@ public class T2IParamTypes
                             vals[i] = GetBestModelInList(CleanModelName(search), possible);
                             if (vals[i] is null)
                             {
-                                List<string> available = type.GetValues(session);
-                                if (available.Count < 10)
+                                if (possible.Length < 10)
                                 {
-                                    throw new InvalidDataException($"Invalid value for param {type.Name} - '{origVal}' - must be one of: `{available.JoinString("`, `")}`");
+                                    throw new SwarmUserErrorException($"Invalid value for param {type.Name} - '{origVal}' - must be one of: `{possible.JoinString("`, `")}`");
                                 }
                                 else
                                 {
-                                    throw new InvalidDataException($"Invalid value for param {type.Name} - '{origVal}' - option does not exist. Has it been deleted?");
+                                    throw new SwarmUserErrorException($"Invalid value for param {type.Name} - '{origVal}' - option does not exist. Has it been deleted?");
                                 }
                             }
                         }
@@ -775,7 +794,7 @@ public class T2IParamTypes
                 if (!ValidBase64Matcher.IsOnlyMatches(val) || val.Length < 10)
                 {
                     string shortText = val.Length > 10 ? val[..10] + "..." : val;
-                    throw new InvalidDataException($"Invalid image value for param {type.Name} - '{origVal}' - must be a valid base64 string - got '{shortText}'");
+                    throw new SwarmUserErrorException($"Invalid image value for param {type.Name} - '{origVal}' - must be a valid base64 string - got '{shortText}'");
                 }
                 return val;
             case T2IParamDataType.IMAGE_LIST:
@@ -794,7 +813,7 @@ public class T2IParamTypes
                     if (!ValidBase64Matcher.IsOnlyMatches(partVal) || partVal.Length < 10)
                     {
                         string shortText = partVal.Length > 10 ? partVal[..10] + "..." : partVal;
-                        throw new InvalidDataException($"Invalid image-list value for param {type.Name} - '{origVal}' - must be a valid base64 string - got '{shortText}'");
+                        throw new SwarmUserErrorException($"Invalid image-list value for param {type.Name} - '{origVal}' - must be a valid base64 string - got '{shortText}'");
                     }
                     parts.Add(partVal);
                 }
@@ -802,16 +821,16 @@ public class T2IParamTypes
             case T2IParamDataType.MODEL:
                 if (!Program.T2IModelSets.TryGetValue(type.Subtype ?? "Stable-Diffusion", out T2IModelHandler handler))
                 {
-                    throw new InvalidDataException($"Invalid model sub-type for param {type.Name}: '{type.Subtype}' - are you sure that type name is correct? (Developer error)");
+                    throw new SwarmUserErrorException($"Invalid model sub-type for param {type.Name}: '{type.Subtype}' - are you sure that type name is correct? (Developer error)");
                 }
                 val = GetBestModelInList(val, [.. handler.ListModelNamesFor(session)]);
                 if (val is null)
                 {
-                    throw new InvalidDataException($"Invalid model value for param {type.Name} - '{origVal}' - are you sure that model name is correct?");
+                    throw new SwarmUserErrorException($"Invalid model value for param {type.Name} - '{origVal}' - are you sure that model name is correct?");
                 }
                 return val;
         }
-        throw new InvalidDataException($"Unknown parameter type's data type? {type.Type}");
+        throw new SwarmUserErrorException($"Unknown parameter type's data type? {type.Type}");
     }
 
     /// <summary>Takes user input of a parameter and applies it to the parameter tracking data object.</summary>
@@ -819,7 +838,7 @@ public class T2IParamTypes
     {
         if (!TryGetType(paramTypeName, out T2IParamType type, data))
         {
-            throw new InvalidDataException("Unrecognized parameter type name.");
+            throw new SwarmUserErrorException($"Unrecognized parameter type name '{paramTypeName}'.");
         }
         if (value == type.IgnoreIf)
         {
@@ -829,7 +848,7 @@ public class T2IParamTypes
         {
             if (!data.SourceSession.User.HasGenericPermission(type.Permission))
             {
-                throw new InvalidDataException($"You do not have permission to use parameter {type.Name}.");
+                throw new SwarmUserErrorException($"You do not have permission to use parameter {type.Name}.");
             }
         }
         try
@@ -837,9 +856,9 @@ public class T2IParamTypes
             value = ValidateParam(type, value, data.SourceSession);
             data.Set(type, value);
         }
-        catch (InvalidDataException ex)
+        catch (SwarmReadableErrorException ex)
         {
-            throw new InvalidDataException($"Invalid value for parameter {type.Name}: {ex.Message}");
+            throw new SwarmReadableErrorException($"Invalid value for parameter {type.Name}: {ex.Message}");
         }
         catch (Exception ex)
         {
@@ -892,5 +911,20 @@ public class T2IParamTypes
         else if (aspectRatio == "9:21") { width = 320; height = 768; }
         else { width = -1; height = -1; }
         return (width, height);
+    }
+
+    /// <summary>Adds new entries to a list of dropdown values, in a clean way that avoids breaking from display names, and applying an async-safe concat.</summary>
+    public static void ConcatDropdownValsClean(ref List<string> mainList, IEnumerable<string> addIn)
+    {
+        HashSet<string> existing = mainList.Select(v => v.Before("///")).ToHashSet();
+        List<string> result = new(mainList);
+        foreach (string str in addIn)
+        {
+            if (!existing.Contains(str.Before("///")))
+            {
+                result.Add(str);
+            }
+        }
+        mainList = result;
     }
 }

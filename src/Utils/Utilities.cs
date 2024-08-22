@@ -174,15 +174,16 @@ public static class Utilities
     }
 
     /// <summary>Gets a convenient cancel token that cancels itself after a given time OR the program itself is cancelled.</summary>
-    public static CancellationToken TimedCancel(TimeSpan time)
+    public static CancellationTokenSource TimedCancel(TimeSpan time)
     {
-        return CancellationTokenSource.CreateLinkedTokenSource(Program.GlobalProgramCancel, new CancellationTokenSource(time).Token).Token;
+        return CancellationTokenSource.CreateLinkedTokenSource(Program.GlobalProgramCancel, new CancellationTokenSource(time).Token);
     }
 
     /// <summary>Send JSON data to a WebSocket.</summary>
     public static async Task SendJson(this WebSocket socket, JObject obj, TimeSpan maxDuration)
     {
-        await socket.SendAsync(obj.ToString(Formatting.None).EncodeUTF8(), WebSocketMessageType.Text, true, TimedCancel(maxDuration));
+        using CancellationTokenSource cancel = TimedCancel(maxDuration);
+        await socket.SendAsync(obj.ToString(Formatting.None).EncodeUTF8(), WebSocketMessageType.Text, true, cancel.Token);
     }
 
     /// <summary>Equivalent to <see cref="Task.WhenAny(IEnumerable{Task})"/> but doesn't break on an empty list.</summary>
@@ -227,7 +228,8 @@ public static class Utilities
     /// <summary>Receive raw binary data from a WebSocket.</summary>
     public static async Task<byte[]> ReceiveData(this WebSocket socket, TimeSpan maxDuration, int maxBytes)
     {
-        return await ReceiveData(socket, maxBytes, TimedCancel(maxDuration));
+        using CancellationTokenSource cancel = TimedCancel(maxDuration);
+        return await ReceiveData(socket, maxBytes, cancel.Token);
     }
 
     /// <summary>Receive JSON data from a WebSocket.</summary>
@@ -327,7 +329,8 @@ public static class Utilities
         if (socket != null)
         {
             await socket.SendJson(obj, TimeSpan.FromMinutes(1));
-            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, TimedCancel(TimeSpan.FromMinutes(1)));
+            using CancellationTokenSource cancel = TimedCancel(TimeSpan.FromMinutes(1));
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, cancel.Token);
             return;
         }
         byte[] resp = obj.ToString(Formatting.None).EncodeUTF8();
@@ -528,7 +531,7 @@ public static class Utilities
         ConcurrentQueue<(long, long, long, bool)> progUpdates = new();
         if (response.StatusCode != HttpStatusCode.OK)
         {
-            throw new InvalidOperationException($"Failed to download {altUrl}: got response code {(int)response.StatusCode} {response.StatusCode}");
+            throw new SwarmReadableErrorException($"Failed to download {altUrl}: got response code {(int)response.StatusCode} {response.StatusCode}");
         }
         using Stream dlStream = await response.Content.ReadAsStreamAsync();
         Task loadData = Task.Run(async () =>
@@ -582,7 +585,7 @@ public static class Utilities
                             {
                                 throw new TaskCanceledException($"Download {altUrl} was cancelled.");
                             }
-                            throw new InvalidOperationException($"Download {altUrl} failed: expected {length} bytes but got {progress} bytes.");
+                            throw new SwarmReadableErrorException($"Download {altUrl} failed: expected {length} bytes but got {progress} bytes.");
                         }
                         break;
                     }
@@ -853,16 +856,52 @@ public static class Utilities
         ProcessStartInfo start = new("git", args)
         {
             RedirectStandardOutput = true,
+            RedirectStandardError = true,
             UseShellExecute = false,
             WorkingDirectory = dir
         };
         SemaphoreSlim semaphore = GitOverlapLocks.GetLock(dir);
-        semaphore.Wait();
+        await semaphore.WaitAsync();
         try
         {
             Process p = Process.Start(start);
-            await p.WaitForExitAsync(Program.GlobalProgramCancel);
-            return await p.StandardOutput.ReadToEndAsync();
+            Task<string> stdOutRead = p.StandardOutput.ReadToEndAsync();
+            Task<string> stdErrRead = p.StandardError.ReadToEndAsync();
+            async Task<string> result()
+            {
+                string stdout = await stdOutRead;
+                string stderr = await stdErrRead;
+                if (!string.IsNullOrWhiteSpace(stderr))
+                {
+                    return $"{stdout}\n{stderr}";
+                }
+                return stdout;
+            }
+            Task exitTask = p.WaitForExitAsync(Program.GlobalProgramCancel);
+            Task finished = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromMinutes(1)));
+            if (finished == exitTask)
+            {
+                return await result();
+            }
+            p.Refresh();
+            if (p.HasExited)
+            {
+                return await result();
+            }
+            Logs.Warning($"Git process '{args}' in '{dir}' has been running for over a minute, something may have gone wrong, allowing 1 more minute to finish...");
+            finished = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromMinutes(1)));
+            if (finished == exitTask)
+            {
+                return await result();
+            }
+            p.Refresh();
+            if (p.HasExited)
+            {
+                return await result();
+            }
+            Logs.Error($"Git process '{args}' in '{dir}' has been running for over 2 minutes - something has gone wrong. Will background.");
+            NetworkBackendUtils.ReportLogsFromProcess(p, "failed git process", "failed-git");
+            return "Failed - process never finished in time";
         }
         finally
         {

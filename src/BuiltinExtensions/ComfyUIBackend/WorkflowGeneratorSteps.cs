@@ -139,6 +139,15 @@ public class WorkflowGeneratorSteps
                 });
                 g.LoadingModel = [guided, 0];
             }
+            if (g.UserInput.TryGet(ComfyUIBackendExtension.PerturbedAttentionGuidanceScale, out double pagScale))
+            {
+                string guided = g.CreateNode("PerturbedAttentionGuidance", new JObject()
+                {
+                    ["model"] = g.LoadingModel,
+                    ["scale"] = pagScale
+                });
+                g.LoadingModel = [guided, 0];
+            }
         }, -7);
         AddModelGenStep(g =>
         {
@@ -201,6 +210,14 @@ public class WorkflowGeneratorSteps
                         ["channel"] = "red"
                     });
                     g.EnableDifferential();
+                    if (g.UserInput.TryGet(T2IParamTypes.MaskGrow, out int growAmount))
+                    {
+                        maskImageNode = g.CreateNode("SwarmMaskGrow", new JObject()
+                        {
+                            ["mask"] = new JArray() { maskImageNode, 0 },
+                            ["grow"] = growAmount,
+                        });
+                    }
                     if (g.UserInput.TryGet(T2IParamTypes.MaskBlur, out int blurAmount))
                     {
                         maskImageNode = g.CreateNode("SwarmMaskBlur", new JObject()
@@ -214,27 +231,29 @@ public class WorkflowGeneratorSteps
                 }
                 g.CreateLoadImageNode(img, "${initimage}", true, "15");
                 g.FinalInputImage = ["15", 0];
-                if (g.FinalMask is not null)
+                JArray currentMask = g.FinalMask;
+                if (currentMask is not null)
                 {
                     if (g.UserInput.TryGet(T2IParamTypes.MaskShrinkGrow, out int shrinkGrow))
                     {
                         g.MaskShrunkInfo = g.CreateImageMaskCrop(g.FinalMask, g.FinalInputImage, shrinkGrow, g.FinalVae, g.FinalLoadedModel);
+                        currentMask = [g.MaskShrunkInfo.Item2, 0];
                         g.FinalLatentImage = [g.MaskShrunkInfo.Item3, 0];
                     }
                     else
                     {
-                        g.CreateVAEEncode(g.FinalVae, ["15", 0], "5", mask: g.FinalMask);
+                        g.CreateVAEEncode(g.FinalVae, ["15", 0], "5", mask: currentMask);
                         string appliedNode = g.CreateNode("SetLatentNoiseMask", new JObject()
                         {
                             ["samples"] = g.FinalLatentImage,
-                            ["mask"] = g.FinalMask
+                            ["mask"] = currentMask
                         });
                         g.FinalLatentImage = [appliedNode, 0];
                     }
                 }
                 else
                 {
-                    g.CreateVAEEncode(g.FinalVae, ["15", 0], "5", mask: g.FinalMask);
+                    g.CreateVAEEncode(g.FinalVae, ["15", 0], "5", mask: currentMask);
                 }
                 if (g.UserInput.TryGet(T2IParamTypes.UnsamplerPrompt, out string unprompt))
                 {
@@ -272,14 +291,14 @@ public class WorkflowGeneratorSteps
                 }
                 if (g.UserInput.TryGet(T2IParamTypes.InitImageResetToNorm, out double resetFactor))
                 {
-                    string emptyImg = g.CreateEmptyImage(g.UserInput.Get(T2IParamTypes.Width), g.UserInput.GetImageHeight(), g.UserInput.Get(T2IParamTypes.BatchSize, 1));
-                    if (g.Features.Contains("comfy_latent_blend_masked") && g.FinalMask is not null)
+                    string emptyImg = g.CreateEmptyImage(g.UserInput.GetImageWidth(), g.UserInput.GetImageHeight(), g.UserInput.Get(T2IParamTypes.BatchSize, 1));
+                    if (g.Features.Contains("comfy_latent_blend_masked") && currentMask is not null)
                     {
                         string blended = g.CreateNode("SwarmLatentBlendMasked", new JObject()
                         {
                             ["samples0"] = g.FinalLatentImage,
                             ["samples1"] = new JArray() { emptyImg, 0 },
-                            ["mask"] = g.FinalMask,
+                            ["mask"] = currentMask,
                             ["blend_factor"] = resetFactor
                         });
                         g.FinalLatentImage = [blended, 0];
@@ -307,7 +326,7 @@ public class WorkflowGeneratorSteps
             }
             else
             {
-                g.CreateEmptyImage(g.UserInput.Get(T2IParamTypes.Width), g.UserInput.GetImageHeight(), g.UserInput.Get(T2IParamTypes.BatchSize, 1), "5");
+                g.CreateEmptyImage(g.UserInput.GetImageWidth(), g.UserInput.GetImageHeight(), g.UserInput.Get(T2IParamTypes.BatchSize, 1), "5");
             }
         }, -9);
         #endregion
@@ -368,7 +387,7 @@ public class WorkflowGeneratorSteps
                     if (!g.UserInput.TryGet(T2IParamTypes.Model, out T2IModel model) || model.ModelClass is null || 
                         (model.ModelClass.CompatClass != "stable-diffusion-xl-v1"/* && model.ModelClass.CompatClass != "stable-diffusion-v3-medium"*/))
                     {
-                        throw new InvalidDataException($"Model type must be SDXL for ReVision (currently is {model?.ModelClass?.Name ?? "Unknown"}). Set ReVision Strength to 0 if you just want IP-Adapter.");
+                        throw new SwarmUserErrorException($"Model type must be SDXL for ReVision (currently is {model?.ModelClass?.Name ?? "Unknown"}). Set ReVision Strength to 0 if you just want IP-Adapter.");
                     }
                     for (int i = 0; i < images.Count; i++)
                     {
@@ -468,7 +487,7 @@ public class WorkflowGeneratorSteps
                         }
                         if (presetLow.StartsWith("light"))
                         {
-                            if (isXl) { throw new InvalidOperationException("IP-Adapter light model is not supported for SDXL"); }
+                            if (isXl) { throw new SwarmUserErrorException("IP-Adapter light model is not supported for SDXL"); }
                             else { requireIPAdapterModel("sd15_light_v11.bin", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter_sd15_light_v11.bin"); }
                         }
                         else if (presetLow.StartsWith("standard"))
@@ -493,7 +512,7 @@ public class WorkflowGeneratorSteps
                         }
                         else if (presetLow.StartsWith("full"))
                         {
-                            if (isXl) { throw new InvalidOperationException("IP-Adapter full face model is not supported for SDXL"); }
+                            if (isXl) { throw new SwarmUserErrorException("IP-Adapter full face model is not supported for SDXL"); }
                             else { requireIPAdapterModel("full_face_sd15.safetensors", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/ip-adapter-full-face_sd15.safetensors"); }
                         }
                         else if (presetLow == "faceid")
@@ -511,7 +530,7 @@ public class WorkflowGeneratorSteps
                         }
                         else if (presetLow.StartsWith("faceid plus -"))
                         {
-                            if (isXl) { throw new InvalidOperationException("IP-Adapter FaceID plus model is not supported for SDXL"); }
+                            if (isXl) { throw new SwarmUserErrorException("IP-Adapter FaceID plus model is not supported for SDXL"); }
                             else
                             {
                                 requireIPAdapterModel("ip-adapter-faceid-plus_sd15.bin", "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-plus_sd15.bin");
@@ -534,7 +553,7 @@ public class WorkflowGeneratorSteps
                         else if (presetLow.StartsWith("faceid portrait unnorm"))
                         {
                             if (isXl) { requireIPAdapterModel("ip-adapter-faceid-portrait_sdxl_unnorm.bin", "https://huggingface.co/h94/IP-Adapter-FaceID/resolve/main/ip-adapter-faceid-portrait_sdxl_unnorm.bin"); }
-                            else { throw new InvalidOperationException("IP-Adapter FaceID Portrait UnNorm model is only supported for SDXL"); }
+                            else { throw new SwarmUserErrorException("IP-Adapter FaceID Portrait UnNorm model is only supported for SDXL"); }
                         }
                         string ipAdapterLoader;
                         if (presetLow.StartsWith("faceid"))
@@ -559,7 +578,7 @@ public class WorkflowGeneratorSteps
                         double ipAdapterEnd = g.UserInput.Get(ComfyUIBackendExtension.IPAdapterEnd, 1.0);
                         if (ipAdapterStart >= ipAdapterEnd) 
                         {
-                            throw new InvalidDataException($"IP-Adapter Start must be less than IP-Adapter End.");
+                            throw new SwarmUserErrorException($"IP-Adapter Start must be less than IP-Adapter End.");
                         }
                         string ipAdapterNode = g.CreateNode("IPAdapter", new JObject()
                         {
@@ -570,7 +589,7 @@ public class WorkflowGeneratorSteps
                             ["weight"] = g.UserInput.Get(ComfyUIBackendExtension.IPAdapterWeight, 1),
                             ["start_at"] = ipAdapterStart,
                             ["end_at"] = ipAdapterEnd,
-                            ["weight_type"] = "standard" // TODO: ...???
+                            ["weight_type"] = g.UserInput.Get(ComfyUIBackendExtension.IPAdapterWeightType, "standard")
                         });
                         g.FinalModel = [ipAdapterNode, 0];
                     }
@@ -588,7 +607,7 @@ public class WorkflowGeneratorSteps
                             ["clip_vision"] = new JArray() { $"{ipAdapterVisionLoader}", 0 },
                             ["weight"] = g.UserInput.Get(ComfyUIBackendExtension.IPAdapterWeight, 1),
                             ["noise"] = 0,
-                            ["weight_type"] = "original" // TODO: ...???
+                            ["weight_type"] = "original"
                         });
                         g.FinalModel = [ipAdapterNode, 0];
                     }
@@ -622,8 +641,7 @@ public class WorkflowGeneratorSteps
             for (int i = 0; i < 3; i++)
             {
                 T2IParamTypes.ControlNetParamHolder controlnetParams = T2IParamTypes.Controlnets[i];
-                if (g.UserInput.TryGet(controlnetParams.Model, out T2IModel controlModel)
-                    && g.UserInput.TryGet(controlnetParams.Strength, out double controlStrength))
+                if (g.UserInput.TryGet(controlnetParams.Strength, out double controlStrength))
                 {
                     string imageInput = "${" + controlnetParams.Image.Type.ID + "}";
                     if (!g.UserInput.TryGet(controlnetParams.Image, out Image img))
@@ -631,20 +649,22 @@ public class WorkflowGeneratorSteps
                         if (firstImage is null)
                         {
                             Logs.Verbose($"Following error relates to parameters: {g.UserInput.ToJSON().ToDenseDebugString()}");
-                            throw new InvalidDataException("Must specify either a ControlNet Image, or Init image. Or turn off ControlNet if not wanted.");
+                            throw new SwarmUserErrorException("Must specify either a ControlNet Image, or Init image. Or turn off ControlNet if not wanted.");
                         }
                         img = firstImage;
                     }
                     string imageNode = g.CreateLoadImageNode(img, imageInput, true);
+                    JArray imageNodeActual = [imageNode, 0];
+                    T2IModel controlModel = g.UserInput.Get(controlnetParams.Model, null);
                     if (!g.UserInput.TryGet(ComfyUIBackendExtension.ControlNetPreprocessorParams[i], out string preprocessor))
                     {
                         preprocessor = "none";
-                        string wantedPreproc = controlModel.Metadata?.Preprocessor;
-                        string cnName = $"{controlModel.Name}{controlModel.RawFilePath.Replace('\\', '/').AfterLast('/')}".ToLowerFast();
+                        string wantedPreproc = controlModel?.Metadata?.Preprocessor;
+                        string cnName = $"{controlModel?.Name}{controlModel?.RawFilePath.Replace('\\', '/').AfterLast('/')}".ToLowerFast();
                         if (string.IsNullOrWhiteSpace(wantedPreproc))
                         {
                             if (cnName.Contains("canny")) { wantedPreproc = "canny"; }
-                            else if (cnName.Contains("depth") || controlModel.Name.Contains("midas")) { wantedPreproc = "depth"; }
+                            else if (cnName.Contains("depth") || cnName.Contains("midas")) { wantedPreproc = "depth"; }
                             else if (cnName.Contains("sketch")) { wantedPreproc = "sketch"; }
                             else if (cnName.Contains("scribble")) { wantedPreproc = "scribble"; }
                             else if (cnName.Contains("pose")) { wantedPreproc = "pose"; }
@@ -670,7 +690,7 @@ public class WorkflowGeneratorSteps
                             {
                                 if (!getBestFor("midas-depthmap") && !getBestFor("depthmap") && !getBestFor("depth") && !getBestFor("midas") && !getBestFor("zoe") && !getBestFor("leres"))
                                 {
-                                    throw new InvalidDataException("No preprocessor found for depth - please install a Comfy extension that adds eg MiDaS depthmap preprocessors, or select 'none' if using a manual depthmap");
+                                    throw new SwarmUserErrorException("No preprocessor found for depth - please install a Comfy extension that adds eg MiDaS depthmap preprocessors, or select 'none' if using a manual depthmap");
                                 }
                             }
                             else if (wantedPreproc == "canny")
@@ -702,57 +722,78 @@ public class WorkflowGeneratorSteps
                     }
                     if (preprocessor.ToLowerFast() != "none")
                     {
-                        JToken objectData = ComfyUIBackendExtension.ControlNetPreprocessors[preprocessor] ?? throw new InvalidDataException($"ComfyUI backend does not have a preprocessor named '{preprocessor}'");
-                        string preProcNode = g.CreateNode(preprocessor, (_, n) =>
+                        JToken objectData = ComfyUIBackendExtension.ControlNetPreprocessors[preprocessor] ?? throw new SwarmUserErrorException($"ComfyUI backend does not have a preprocessor named '{preprocessor}'");
+                        JArray preprocActual;
+                        if (objectData is JObject objObj && objObj.TryGetValue("swarm_custom", out JToken swarmCustomTok) && swarmCustomTok.Value<bool>())
                         {
-                            n["inputs"] = new JObject()
+                            preprocActual = g.CreateNodesFromSpecialSyntax(objObj, [[imageNode, 0]]);
+                        }
+                        else
+                        {
+                            string preProcNode = g.CreateNode(preprocessor, (_, n) =>
                             {
-                                ["image"] = new JArray() { $"{imageNode}", 0 }
-                            };
-                            foreach ((string key, JToken data) in (JObject)objectData["input"]["required"])
-                            {
-                                if (key == "mask")
+                                n["inputs"] = new JObject()
                                 {
-                                    if (g.FinalMask is null)
+                                    ["image"] = new JArray() { $"{imageNode}", 0 }
+                                };
+                                foreach (string type in new[] { "required", "optional" })
+                                {
+                                    if (((JObject)objectData["input"]).TryGetValue(type, out JToken set))
                                     {
-                                        throw new InvalidOperationException($"ControlNet Preprocessor '{preprocessor}' requires a mask. Please set a mask under the Init Image parameter group.");
+                                        foreach ((string key, JToken data) in (JObject)set)
+                                        {
+                                            if (key == "mask")
+                                            {
+                                                if (g.FinalMask is null)
+                                                {
+                                                    throw new SwarmUserErrorException($"ControlNet Preprocessor '{preprocessor}' requires a mask. Please set a mask under the Init Image parameter group.");
+                                                }
+                                                n["inputs"]["mask"] = g.FinalMask;
+                                            }
+                                            else if (key == "resolution")
+                                            {
+                                                n["inputs"]["resolution"] = (int)Math.Round(Math.Sqrt(g.UserInput.GetImageWidth() * g.UserInput.GetImageHeight()) / 64) * 64;
+                                            }
+                                            else if (data.Count() == 2 && data[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
+                                            {
+                                                n["inputs"][key] = defaultValue;
+                                            }
+                                        }
                                     }
-                                    n["inputs"]["mask"] = g.FinalMask;
                                 }
-                                else if (data.Count() == 2 && data[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
-                                {
-                                    n["inputs"][key] = defaultValue;
-                                }
-                            }
-                            if (((JObject)objectData["input"]).TryGetValue("optional", out JToken optional))
-                            {
-                                foreach ((string key, JToken data) in (JObject)optional)
-                                {
-                                    if (data.Count() == 2 && data[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
-                                    {
-                                        n["inputs"][key] = defaultValue;
-                                    }
-                                }
-                            }
-                        });
-                        g.NodeHelpers["controlnet_preprocessor"] = $"{preProcNode}";
+                            });
+                            g.NodeHelpers["controlnet_preprocessor"] = $"{preProcNode}";
+                            preprocActual = [preProcNode, 0];
+                        }
                         if (g.UserInput.Get(T2IParamTypes.ControlNetPreviewOnly))
                         {
-                            g.FinalImageOut = [preProcNode, 0];
+                            g.FinalImageOut = preprocActual;
                             g.CreateImageSaveNode(g.FinalImageOut, "9");
                             g.SkipFurtherSteps = true;
                             return;
                         }
-                        imageNode = preProcNode;
+                        imageNodeActual = preprocActual;
                     }
                     else if (g.UserInput.Get(T2IParamTypes.ControlNetPreviewOnly))
                     {
-                        throw new InvalidDataException("Cannot preview a ControlNet preprocessor without any preprocessor enabled.");
+                        throw new SwarmUserErrorException("Cannot preview a ControlNet preprocessor without any preprocessor enabled.");
+                    }
+                    if (controlModel is null)
+                    {
+                        throw new SwarmUserErrorException("Cannot use ControlNet without a model selected.");
                     }
                     string controlModelNode = g.CreateNode("ControlNetLoader", new JObject()
                     {
                         ["control_net_name"] = controlModel.ToString(g.ModelFolderFormat)
                     });
+                    if (g.UserInput.TryGet(ComfyUIBackendExtension.ControlNetUnionTypeParams[i], out string unionType))
+                    {
+                        controlModelNode = g.CreateNode("SetUnionControlNetType", new JObject()
+                        {
+                            ["control_net"] = new JArray() { $"{controlModelNode}", 0 },
+                            ["type"] = unionType
+                        });
+                    }
                     string applyNode;
                     if (g.CurrentCompatClass() == "stable-diffusion-v3-medium")
                     {
@@ -762,7 +803,7 @@ public class WorkflowGeneratorSteps
                             ["negative"] = g.FinalNegativePrompt,
                             ["control_net"] = new JArray() { $"{controlModelNode}", 0 },
                             ["vae"] = g.FinalVae,
-                            ["image"] = new JArray() { $"{imageNode}", 0 },
+                            ["image"] = imageNodeActual,
                             ["strength"] = controlStrength,
                             ["start_percent"] = g.UserInput.Get(controlnetParams.Start, 0),
                             ["end_percent"] = g.UserInput.Get(controlnetParams.End, 1)
@@ -775,7 +816,7 @@ public class WorkflowGeneratorSteps
                             ["positive"] = g.FinalPrompt,
                             ["negative"] = g.FinalNegativePrompt,
                             ["control_net"] = new JArray() { $"{controlModelNode}", 0 },
-                            ["image"] = new JArray() { $"{imageNode}", 0 },
+                            ["image"] = imageNodeActual,
                             ["strength"] = controlStrength,
                             ["start_percent"] = g.UserInput.Get(controlnetParams.Start, 0),
                             ["end_percent"] = g.UserInput.Get(controlnetParams.End, 1)
@@ -791,6 +832,12 @@ public class WorkflowGeneratorSteps
         AddStep(g =>
         {
             int steps = g.UserInput.Get(T2IParamTypes.Steps);
+            bool noSkip = false;
+            if (steps < 0)
+            {
+                noSkip = true;
+                steps = 0;
+            }
             int startStep = 0;
             int endStep = 10000;
             if (g.UserInput.TryGet(T2IParamTypes.InitImage, out Image _) && g.UserInput.TryGet(T2IParamTypes.InitImageCreativity, out double creativity))
@@ -806,8 +853,14 @@ public class WorkflowGeneratorSteps
                 endStep = (int)(steps * (1 - endEarly));
             }
             double cfg = g.UserInput.Get(T2IParamTypes.CFGScale);
-            if (steps == 0 || endStep <= startStep)
+            if (!noSkip && (steps == 0 || endStep <= startStep))
             {
+                g.CreateNode("SwarmJustLoadTheModelPlease", new JObject()
+                {
+                    ["model"] = g.FinalModel,
+                    ["clip"] = g.FinalClip,
+                    ["vae"] = g.FinalVae
+                });
                 g.FinalSamples = g.FinalLatentImage;
             }
             else
@@ -901,7 +954,7 @@ public class WorkflowGeneratorSteps
                             g.CreateNode("ImageScale", new JObject()
                             {
                                 ["image"] = new JArray() { "28", 0 },
-                                ["width"] = (int)Math.Round(g.UserInput.Get(T2IParamTypes.Width) * refineUpscale),
+                                ["width"] = (int)Math.Round(g.UserInput.GetImageWidth() * refineUpscale),
                                 ["height"] = (int)Math.Round(g.UserInput.GetImageHeight() * refineUpscale),
                                 ["upscale_method"] = "bilinear",
                                 ["crop"] = "disabled"
@@ -944,7 +997,7 @@ public class WorkflowGeneratorSteps
                     model = [hyperTileNode, 0];
                 }
                 int steps = g.UserInput.Get(T2IParamTypes.RefinerSteps, g.UserInput.Get(T2IParamTypes.Steps));
-                double cfg = g.UserInput.Get(T2IParamTypes.CFGScale);
+                double cfg = g.UserInput.Get(T2IParamTypes.RefinerCFGScale, g.UserInput.Get(T2IParamTypes.CFGScale));
                 g.CreateKSampler(model, prompt, negPrompt, g.FinalSamples, cfg, steps, (int)Math.Round(steps * (1 - refinerControl)), 10000,
                     g.UserInput.Get(T2IParamTypes.Seed) + 1, false, method != "StepSwapNoisy", id: "23", doTiled: g.UserInput.Get(T2IParamTypes.RefinerDoTiling, false));
                 g.FinalSamples = ["23", 0];
@@ -1061,7 +1114,7 @@ public class WorkflowGeneratorSteps
                     int steps = g.UserInput.Get(T2IParamTypes.Steps);
                     int startStep = (int)Math.Round(steps * (1 - part.Strength2));
                     long seed = g.UserInput.Get(T2IParamTypes.Seed) + 2 + i;
-                    double cfg = g.UserInput.Get(T2IParamTypes.CFGScale);
+                    double cfg = g.UserInput.Get(T2IParamTypes.RefinerCFGScale, g.UserInput.Get(T2IParamTypes.CFGScale));
                     string sampler = g.CreateKSampler(model, prompt, negPrompt, [masked, 0], cfg, steps, startStep, 10000, seed, false, true);
                     string decoded = g.CreateVAEDecode(vae, [sampler, 0]);
                     g.FinalImageOut = g.RecompositeCropped(boundsNode, [croppedMask, 0], g.FinalImageOut, [decoded, 0]);
@@ -1115,7 +1168,14 @@ public class WorkflowGeneratorSteps
                 });
                 g.FinalImageOut = [removed, 0];
             }
-            g.CreateImageSaveNode(g.FinalImageOut, "9");
+            if (g.UserInput.SourceSession is null && g.UserInput.Get(T2IParamTypes.DoNotSave, false) && g.UserInput.Get(T2IParamTypes.Steps) == 0 && !g.UserInput.TryGet(T2IParamTypes.RefinerModel, out _))
+            {
+                // We don't actually want an image we're just aggressively loading a model or something
+            }
+            else
+            {
+                g.CreateImageSaveNode(g.FinalImageOut, "9");
+            }
         }, 10);
         #endregion
         #region Video
@@ -1146,7 +1206,7 @@ public class WorkflowGeneratorSteps
                     }
                     if (string.IsNullOrWhiteSpace(svdVae))
                     {
-                        throw new InvalidDataException("No default SVD VAE found, please download an SVD VAE (any SDv1 VAE will do) and set it as default in User Settings");
+                        throw new SwarmUserErrorException("No default SVD VAE found, please download an SVD VAE (any SDv1 VAE will do) and set it as default in User Settings");
                     }
                     string vaeLoader = g.CreateNode("VAELoader", new JObject()
                     {
@@ -1179,7 +1239,7 @@ public class WorkflowGeneratorSteps
                 string resFormat = g.UserInput.Get(T2IParamTypes.VideoResolution, "Model Preferred");
                 int width = vidModel.StandardWidth <= 0 ? 1024 : vidModel.StandardWidth;
                 int height = vidModel.StandardHeight <= 0 ? 576 : vidModel.StandardHeight;
-                int imageWidth = g.UserInput.Get(T2IParamTypes.Width, width);
+                int imageWidth = g.UserInput.GetImageWidth();
                 int imageHeight = g.UserInput.GetImageHeight();
                 if (resFormat == "Image Aspect, Model Res")
                 {

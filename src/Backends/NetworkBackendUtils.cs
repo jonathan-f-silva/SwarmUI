@@ -40,14 +40,14 @@ public static class NetworkBackendUtils
     }
 
     /// <summary>Parses an <see cref="HttpResponseMessage"/> into a JSON object result.</summary>
-    /// <exception cref="InvalidOperationException">Thrown when the server returns invalid data (error code or other non-JSON).</exception>
+    /// <exception cref="SwarmReadableErrorException">Thrown when the server returns invalid data (error code or other non-JSON).</exception>
     /// <exception cref="NotImplementedException">Thrown when an invalid JSON type is requested.</exception>
     public static async Task<JType> Parse<JType>(HttpResponseMessage message) where JType : class
     {
         string content = await message.Content.ReadAsStringAsync();
         if (content.StartsWith("500 Internal Server Error"))
         {
-            throw new InvalidOperationException($"Server turned 500 Internal Server Error, something went wrong: {content}");
+            throw new SwarmReadableErrorException($"Server turned 500 Internal Server Error, something went wrong: {content}");
         }
         try
         {
@@ -61,7 +61,7 @@ public static class NetworkBackendUtils
         }
         catch (JsonReaderException ex)
         {
-            throw new InvalidOperationException($"Failed to read JSON '{content}' with message: {ex.Message}");
+            throw new SwarmReadableErrorException($"Failed to read JSON '{content}' with message: {ex.Message}");
         }
         throw new NotImplementedException();
     }
@@ -246,7 +246,7 @@ public static class NetworkBackendUtils
     }
 
     /// <summary>Configures python execution for a given python start script.</summary>
-    public static void ConfigurePythonExeFor(string script, string nameSimple, ProcessStartInfo start, out string preArgs)
+    public static void ConfigurePythonExeFor(string script, string nameSimple, ProcessStartInfo start, out string preArgs, out string forcePrior)
     {
         void AddPath(string path)
         {
@@ -257,6 +257,7 @@ public static class NetworkBackendUtils
         string dir = Path.GetDirectoryName(path);
         start.WorkingDirectory = dir;
         preArgs = "-s " + path.AfterLast("/");
+        forcePrior = "";
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             if (File.Exists($"{dir}/venv/Scripts/python.exe"))
@@ -275,6 +276,13 @@ public static class NetworkBackendUtils
             {
                 start.FileName = "python";
             }
+            if (File.Exists($"{dir}/zluda/zluda.exe"))
+            {
+                string pythonexe = start.FileName;
+                start.FileName = Path.GetFullPath($"{dir}/zluda/zluda.exe");
+                preArgs = $"-- {pythonexe} {preArgs}".Trim();
+                forcePrior = $"-- {pythonexe}";
+            }
         }
         else
         {
@@ -291,23 +299,28 @@ public static class NetworkBackendUtils
     }
 
     /// <summary>Starts a self-start backend based on the user-configuration and backend-specifics provided.</summary>
-    public static Task DoSelfStart(string startScript, AbstractT2IBackend backend, string nameSimple, string identifier, int gpuId, string extraArgs, Func<bool, Task> initInternal, Action<int, Process> takeOutput, bool autoRestart = false)
+    public static Task DoSelfStart(string startScript, AbstractT2IBackend backend, string nameSimple, string identifier, string gpuId, string extraArgs, Func<bool, Task> initInternal, Action<int, Process> takeOutput, bool autoRestart = false)
     {
-        return DoSelfStart(startScript, nameSimple, identifier, gpuId, extraArgs, status => backend.Status = status, async (b) => { await initInternal(b); return backend.Status == BackendStatus.RUNNING; }, takeOutput, () => backend.Status, a => backend.OnShutdown += a, autoRestart);
+        return DoSelfStart(startScript, nameSimple, identifier, gpuId, extraArgs, status => backend.Status = status, async (b) => { await initInternal(b); return backend.Status == BackendStatus.RUNNING; }, takeOutput, () => backend.Status, a => backend.OnShutdown += a, autoRestart, backend.AddLoadStatus);
     }
 
     /// <summary>Starts a self-start backend based on the user-configuration and backend-specifics provided.</summary>
-    public static async Task DoSelfStart(string startScript, string nameSimple, string identifier, int gpuId, string extraArgs, Action<BackendStatus> reviseStatus, Func<bool, Task<bool>> initInternal, Action<int, Process> takeOutput, Func<BackendStatus> getStatus, Action<Action> addShutdownEvent, bool autoRestart = false)
+    public static async Task DoSelfStart(string startScript, string nameSimple, string identifier, string gpuId, string extraArgs, Action<BackendStatus> reviseStatus, Func<bool, Task<bool>> initInternal, Action<int, Process> takeOutput, Func<BackendStatus> getStatus, Action<Action> addShutdownEvent, bool autoRestart = false, Action<string> addLoadStatus = null)
     {
+        addLoadStatus ??= Logs.Debug;
         async Task launch()
         {
+            if (Program.GlobalProgramCancel.IsCancellationRequested)
+            {
+                return;
+            }
             if (string.IsNullOrWhiteSpace(startScript))
             {
-                Logs.Debug($"Cancelling start of {nameSimple} as it has an empty start script.");
+                addLoadStatus($"Cancelling start of {nameSimple} as it has an empty start script.");
                 reviseStatus(BackendStatus.DISABLED);
                 return;
             }
-            Logs.Debug($"Requested generic launch of {startScript} on GPU {gpuId} from {nameSimple}");
+            addLoadStatus($"Requested generic launch of {startScript} on GPU {gpuId} from {nameSimple}");
             string path = startScript.Replace('\\', '/');
             string ext = path.AfterLast('.');
             if (!IsValidStartPath(nameSimple, path, ext))
@@ -329,12 +342,12 @@ public static class NetworkBackendUtils
             string postArgs = extraArgs.Replace("{PORT}", $"{port}").Trim();
             if (path.EndsWith(".py"))
             {
-                ConfigurePythonExeFor(startScript, nameSimple, start, out preArgs);
-                Logs.Debug($"({nameSimple} launch) Will use python: {start.FileName}");
+                ConfigurePythonExeFor(startScript, nameSimple, start, out preArgs, out _);
+                addLoadStatus($"({nameSimple} launch) Will use python: {start.FileName}");
             }
             else
             {
-                Logs.Debug($"({nameSimple} launch) Will shellexec");
+                addLoadStatus($"({nameSimple} launch) Will shellexec");
                 start.FileName = Path.GetFullPath(path);
             }
             start.Arguments = $"{preArgs} {postArgs}".Trim();
@@ -342,15 +355,20 @@ public static class NetworkBackendUtils
             reviseStatus(status);
             Process runningProcess = new() { StartInfo = start };
             takeOutput(port, runningProcess);
+            addLoadStatus("Will start process...");
             runningProcess.Start();
             Logs.Init($"Self-Start {nameSimple} on port {port} is loading...");
             bool everLoaded = false;
             Action onFail = autoRestart ? () =>
             {
-                if (everLoaded)
+                if (everLoaded && !Program.GlobalProgramCancel.IsCancellationRequested)
                 {
                     Logs.Error($"Self-Start {nameSimple} on port {port} failed. Restarting per configuration AutoRestart=true...");
-                    Utilities.RunCheckedTask(launch);
+                    Utilities.RunCheckedTask(async () =>
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(2), Program.GlobalProgramCancel);
+                        await launch();
+                    });
                 }
             } : null;
             ReportLogsFromProcess(runningProcess, $"{nameSimple}", identifier, out Action signalShutdownExpected, getStatus, s => { status = s; reviseStatus(s); }, onFail: onFail);
@@ -362,13 +380,14 @@ public static class NetworkBackendUtils
                 await Task.Delay(TimeSpan.FromSeconds(1));
                 if (checks % 10 == 0)
                 {
-                    Logs.Debug($"{nameSimple} port {port} waiting for server...");
+                    addLoadStatus($"{nameSimple} port {port} waiting for server...");
                 }
                 try
                 {
                     bool alive = await initInternal(true);
                     if (alive)
                     {
+                        addLoadStatus("Done! Started!");
                         Logs.Init($"Self-Start {nameSimple} on port {port} started.");
                     }
                     status = getStatus();
@@ -382,7 +401,7 @@ public static class NetworkBackendUtils
                 }
             }
             everLoaded = status != BackendStatus.ERRORED;
-            Logs.Debug($"{nameSimple} self-start port {port} loop ending (should now be alive)");
+            addLoadStatus($"{nameSimple} self-start port {port} loop ending (should now be alive)");
         }
         await launch();
     }
@@ -424,7 +443,7 @@ public static class NetworkBackendUtils
                 bool keepShowing = false;
                 while ((line = process.StandardOutput.ReadLine()) != null)
                 {
-                    if (line.StartsWith("Traceback (") || line.StartsWith("RuntimeError: "))
+                    if (line.StartsWith("Traceback (") || line.StartsWith("RuntimeError: ") || line.StartsWith("Error: "))
                     {
                         keepShowing = true;
                         Logs.Warning($"[{nameSimple}/STDOUT] {line}");
